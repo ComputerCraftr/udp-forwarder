@@ -32,14 +32,56 @@ fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no address resolved"))
 }
 
+fn make_udp_socket(bind_addr: SocketAddr, read_timeout_ms: u64) -> io::Result<UdpSocket> {
+    let sock = UdpSocket::bind(bind_addr)?;
+    sock.set_read_timeout(Some(Duration::from_millis(read_timeout_ms)))?;
+    Ok(sock)
+}
+
 fn make_upstream_socket(dest: SocketAddr) -> io::Result<UdpSocket> {
-    let upstream_local: SocketAddr = match dest {
+    let bind_addr = match dest {
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     };
-    let s = UdpSocket::bind(upstream_local)?;
-    s.set_read_timeout(Some(Duration::from_millis(250)))?;
-    Ok(s)
+    make_udp_socket(bind_addr, 250)
+}
+
+fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {
+    match (a, b) {
+        (SocketAddr::V4(_), SocketAddr::V4(_)) => false,
+        (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
+        _ => true,
+    }
+}
+
+fn apply_fresh_upstream(
+    fresh: SocketAddr,
+    current_up_addr: &Arc<Mutex<SocketAddr>>,
+    upstream_sock: &Arc<Mutex<UdpSocket>>,
+    context: &str,
+) {
+    let mut cur = current_up_addr.lock().unwrap();
+    let fam_changed = family_changed(*cur, fresh);
+    let changed = *cur != fresh;
+    *cur = fresh;
+    drop(cur);
+    if fam_changed {
+        match make_upstream_socket(fresh) {
+            Ok(new_sock) => {
+                *upstream_sock.lock().unwrap() = new_sock;
+                println!(
+                    "{}: upstream {} (family changed; upstream socket swapped)",
+                    context, fresh
+                );
+            }
+            Err(e) => eprintln!(
+                "{}: failed to create upstream socket for {}: {}",
+                context, fresh, e
+            ),
+        }
+    } else if changed {
+        println!("{}: upstream {}", context, fresh);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,8 +175,7 @@ fn main() -> io::Result<()> {
     let current_up_addr = Arc::new(Mutex::new(initial_upstream_addr));
 
     // Listener for the local client
-    let client_sock = UdpSocket::bind(listen_addr)?;
-    client_sock.set_read_timeout(Some(Duration::from_millis(250)))?;
+    let client_sock = make_udp_socket(listen_addr, 250)?;
 
     let upstream_sock = make_upstream_socket(initial_upstream_addr)?;
     let upstream_sock = Arc::new(Mutex::new(upstream_sock));
@@ -179,27 +220,12 @@ fn main() -> io::Result<()> {
 
                             // Re-resolve upstream target now that a client connected
                             if let Ok(fresh) = resolve_first(&upstream_target_a) {
-                                let mut cur = current_up_addr_a.lock().unwrap();
-                                let family_changed = match (*cur, fresh) {
-                                    (SocketAddr::V4(_), SocketAddr::V4(_)) => false,
-                                    (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
-                                    _ => true,
-                                };
-                                *cur = fresh;
-                                drop(cur);
-                                if family_changed {
-                                    if let Ok(new_sock) = make_upstream_socket(fresh) {
-                                        *upstream_sock_m.lock().unwrap() = new_sock;
-                                        println!(
-                                            "Re-resolved upstream to {} (family changed; upstream socket swapped)",
-                                            fresh
-                                        );
-                                    } else {
-                                        eprintln!("failed to create upstream socket for {}", fresh);
-                                    }
-                                } else {
-                                    println!("Re-resolved upstream to {}", fresh);
-                                }
+                                apply_fresh_upstream(
+                                    fresh,
+                                    &current_up_addr_a,
+                                    &upstream_sock_m,
+                                    "Re-resolved",
+                                );
                             }
                         }
                     }
@@ -303,12 +329,12 @@ fn main() -> io::Result<()> {
                                 *last_seen_w.lock().unwrap() = None;
                             }
                             eprintln!(
-                                "idle timeout reached ({}s): dropped locked client; waiting for a new client",
+                                "Idle timeout reached ({}s): dropped locked client; waiting for a new client",
                                 timeout_secs
                             );
                         }
                         TimeoutAction::Exit => {
-                            eprintln!("idle timeout reached ({}s): exiting", timeout_secs);
+                            eprintln!("Idle timeout reached ({}s): exiting", timeout_secs);
                             process::exit(0);
                         }
                     }
@@ -330,31 +356,12 @@ fn main() -> io::Result<()> {
                     continue;
                 }
                 if let Ok(fresh) = resolve_first(&upstream_target_t) {
-                    let mut cur = current_up_addr_t.lock().unwrap();
-                    let family_changed = match (*cur, fresh) {
-                        (SocketAddr::V4(_), SocketAddr::V4(_)) => false,
-                        (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
-                        _ => true,
-                    };
-                    let changed = *cur != fresh;
-                    *cur = fresh;
-                    drop(cur);
-                    if family_changed {
-                        if let Ok(new_sock) = make_upstream_socket(fresh) {
-                            *upstream_sock_t.lock().unwrap() = new_sock;
-                            println!(
-                                "Periodic re-resolve: upstream {} (family changed; socket swapped)",
-                                fresh
-                            );
-                        } else {
-                            eprintln!(
-                                "Periodic re-resolve: failed to create upstream socket for {}",
-                                fresh
-                            );
-                        }
-                    } else if changed {
-                        println!("Periodic re-resolve: upstream {}", fresh);
-                    }
+                    apply_fresh_upstream(
+                        fresh,
+                        &current_up_addr_t,
+                        &upstream_sock_t,
+                        "Periodic re-resolve",
+                    );
                 }
             }
         });
