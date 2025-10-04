@@ -32,28 +32,39 @@ fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no address resolved"))
 }
 
+fn make_upstream_socket(dest: SocketAddr) -> io::Result<UdpSocket> {
+    let upstream_local: SocketAddr = match dest {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    };
+    let s = UdpSocket::bind(upstream_local)?;
+    s.set_read_timeout(Some(Duration::from_millis(250)))?;
+    Ok(s)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TimeoutAction {
     Drop,
     Exit,
 }
 
-fn parse_args() -> (SocketAddr, SocketAddr, u64, TimeoutAction) {
+fn parse_args() -> (SocketAddr, String, u64, TimeoutAction, u64) {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(
-            "Usage: {} <listen_ip:port> <upstream_host_or_ip:port> [--timeout-secs N] [--on-timeout drop|exit]",
+            "Usage: {} <listen_ip:port> <upstream_host_or_ip:port> [--timeout-secs N] [--on-timeout drop|exit] [--reresolve-secs N]",
             args[0]
         );
         process::exit(2);
     }
 
     let listen_addr: SocketAddr = resolve_first(&args[1]).expect("bad listen addr");
-    let upstream_addr: SocketAddr = resolve_first(&args[2]).expect("bad upstream addr");
+    let upstream_target: String = args[2].clone();
 
     // Defaults
     let mut timeout_secs: u64 = 30;
     let mut action = TimeoutAction::Drop;
+    let mut reresolve_secs: u64 = 0;
 
     // Simple manual flag parsing
     let mut i = 3;
@@ -85,6 +96,17 @@ fn parse_args() -> (SocketAddr, SocketAddr, u64, TimeoutAction) {
                 };
                 i += 2;
             }
+            "--reresolve-secs" => {
+                if i + 1 >= args.len() {
+                    eprintln!("--reresolve-secs requires a value");
+                    process::exit(2);
+                }
+                reresolve_secs = args[i + 1].parse().unwrap_or_else(|_| {
+                    eprintln!("invalid reresolve secs");
+                    process::exit(2)
+                });
+                i += 2;
+            }
             other => {
                 eprintln!("unknown argument: {}", other);
                 process::exit(2);
@@ -92,23 +114,30 @@ fn parse_args() -> (SocketAddr, SocketAddr, u64, TimeoutAction) {
         }
     }
 
-    (listen_addr, upstream_addr, timeout_secs, action)
+    (
+        listen_addr,
+        upstream_target,
+        timeout_secs,
+        action,
+        reresolve_secs,
+    )
 }
 
 fn main() -> io::Result<()> {
-    let (listen_addr, upstream_addr, timeout_secs, action) = parse_args();
+    let (listen_addr, upstream_target, timeout_secs, action, reresolve_secs) = parse_args();
+
+    // Resolve once now to decide family and have an initial destination
+    let initial_upstream_addr: SocketAddr =
+        resolve_first(&upstream_target).expect("bad upstream addr");
+    // Shared current upstream address; will be refreshed on client lock
+    let current_up_addr = Arc::new(Mutex::new(initial_upstream_addr));
 
     // Listener for the local client
     let client_sock = UdpSocket::bind(listen_addr)?;
     client_sock.set_read_timeout(Some(Duration::from_millis(250)))?;
 
-    // Bind upstream socket family to match upstream_addr
-    let upstream_local: SocketAddr = match upstream_addr {
-        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-    };
-    let upstream_sock = UdpSocket::bind(upstream_local)?;
-    upstream_sock.set_read_timeout(Some(Duration::from_millis(250)))?;
+    let upstream_sock = make_upstream_socket(initial_upstream_addr)?;
+    let upstream_sock = Arc::new(Mutex::new(upstream_sock));
 
     // Single-client state
     let client_peer: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
@@ -120,17 +149,19 @@ fn main() -> io::Result<()> {
     println!(
         "Listening on {}, forwarding to upstream {}. Waiting for first client...",
         client_sock.local_addr()?,
-        upstream_addr
+        initial_upstream_addr
     );
     println!("Timeout: {}s, on-timeout: {:?}", timeout_secs, action);
+    println!("Re-resolve every: {}s (0=disabled)", reresolve_secs);
 
     // Thread: client -> upstream
     let client_sock_a = client_sock.try_clone()?;
-    let upstream_sock_a = upstream_sock.try_clone()?;
     let client_peer_a = Arc::clone(&client_peer);
     let locked_a = Arc::clone(&locked);
     let last_seen_a = Arc::clone(&last_seen);
-    let up_addr_a = upstream_addr.clone();
+    let upstream_target_a = Arc::new(upstream_target.clone());
+    let current_up_addr_a = Arc::clone(&current_up_addr);
+    let upstream_sock_m = Arc::clone(&upstream_sock);
 
     let _t_up = thread::spawn(move || {
         let mut buf = vec![0u8; 65535];
@@ -145,13 +176,46 @@ fn main() -> io::Result<()> {
                             locked_a.store(true, Ordering::SeqCst);
                             *last_seen_a.lock().unwrap() = Some(Instant::now());
                             println!("Locked to single client {}", src);
+
+                            // Re-resolve upstream target now that a client connected
+                            if let Ok(fresh) = resolve_first(&upstream_target_a) {
+                                let mut cur = current_up_addr_a.lock().unwrap();
+                                let family_changed = match (*cur, fresh) {
+                                    (SocketAddr::V4(_), SocketAddr::V4(_)) => false,
+                                    (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
+                                    _ => true,
+                                };
+                                *cur = fresh;
+                                drop(cur);
+                                if family_changed {
+                                    if let Ok(new_sock) = make_upstream_socket(fresh) {
+                                        *upstream_sock_m.lock().unwrap() = new_sock;
+                                        println!(
+                                            "Re-resolved upstream to {} (family changed; upstream socket swapped)",
+                                            fresh
+                                        );
+                                    } else {
+                                        eprintln!("failed to create upstream socket for {}", fresh);
+                                    }
+                                } else {
+                                    println!("Re-resolved upstream to {}", fresh);
+                                }
+                            }
                         }
                     }
                     if locked_a.load(Ordering::SeqCst) {
                         let slot = client_peer_a.lock().unwrap();
                         if let Some(locked_client) = *slot {
                             if src == locked_client {
-                                if let Err(e) = upstream_sock_a.send_to(&buf[..n], up_addr_a) {
+                                let dest = { current_up_addr_a.lock().unwrap().clone() };
+                                let sock_clone = {
+                                    upstream_sock_m
+                                        .lock()
+                                        .unwrap()
+                                        .try_clone()
+                                        .expect("clone upstream socket")
+                                };
+                                if let Err(e) = sock_clone.send_to(&buf[..n], dest) {
                                     eprintln!("upstream send_to error: {}", e);
                                 } else {
                                     *last_seen_a.lock().unwrap() = Some(Instant::now());
@@ -173,15 +237,22 @@ fn main() -> io::Result<()> {
 
     // Thread: upstream -> client (reply via listener socket)
     let client_sock_b = client_sock.try_clone()?;
-    let upstream_sock_b = upstream_sock.try_clone()?;
     let client_peer_b = Arc::clone(&client_peer);
     let locked_b = Arc::clone(&locked);
     let last_seen_b = Arc::clone(&last_seen);
+    let upstream_sock_m = Arc::clone(&upstream_sock);
 
     let _t_down = thread::spawn(move || {
         let mut buf = vec![0u8; 65535];
         loop {
-            match upstream_sock_b.recv_from(&mut buf) {
+            let sock_clone = {
+                upstream_sock_m
+                    .lock()
+                    .unwrap()
+                    .try_clone()
+                    .expect("clone upstream socket")
+            };
+            match sock_clone.recv_from(&mut buf) {
                 Ok((n, _src)) => {
                     if locked_b.load(Ordering::SeqCst) {
                         if let Some(dst) = *client_peer_b.lock().unwrap() {
@@ -245,6 +316,49 @@ fn main() -> io::Result<()> {
             }
         }
     });
+
+    if reresolve_secs > 0 {
+        let upstream_target_t = upstream_target.clone();
+        let current_up_addr_t = Arc::clone(&current_up_addr);
+        let upstream_sock_t = Arc::clone(&upstream_sock);
+        let locked_t = Arc::clone(&locked);
+        thread::spawn(move || {
+            let period = Duration::from_secs(reresolve_secs);
+            loop {
+                thread::sleep(period);
+                if !locked_t.load(Ordering::SeqCst) {
+                    continue;
+                }
+                if let Ok(fresh) = resolve_first(&upstream_target_t) {
+                    let mut cur = current_up_addr_t.lock().unwrap();
+                    let family_changed = match (*cur, fresh) {
+                        (SocketAddr::V4(_), SocketAddr::V4(_)) => false,
+                        (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
+                        _ => true,
+                    };
+                    let changed = *cur != fresh;
+                    *cur = fresh;
+                    drop(cur);
+                    if family_changed {
+                        if let Ok(new_sock) = make_upstream_socket(fresh) {
+                            *upstream_sock_t.lock().unwrap() = new_sock;
+                            println!(
+                                "Periodic re-resolve: upstream {} (family changed; socket swapped)",
+                                fresh
+                            );
+                        } else {
+                            eprintln!(
+                                "Periodic re-resolve: failed to create upstream socket for {}",
+                                fresh
+                            );
+                        }
+                    } else if changed {
+                        println!("Periodic re-resolve: upstream {}", fresh);
+                    }
+                }
+            }
+        });
+    }
 
     // Keep main alive
     loop {
