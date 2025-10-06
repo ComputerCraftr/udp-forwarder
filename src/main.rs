@@ -3,7 +3,7 @@
 // - Locks to the first client (SocketAddr) that sends a packet.
 // - Forwards client->upstream and upstream->client.
 // - Uses the listener socket for replies so the client always sees the same source port.
-// - If no traffic is seen for --timeout-secs (default 30), either:
+// - If no traffic is seen for --timeout-secs (default 10), either:
 //     * drop: drop the locked client and accept a new one
 //     * exit: exit the program (status 0)
 //
@@ -104,7 +104,7 @@ fn parse_args() -> (SocketAddr, String, u64, TimeoutAction, u64) {
     let upstream_target: String = args[2].clone();
 
     // Defaults
-    let mut timeout_secs: u64 = 30;
+    let mut timeout_secs: u64 = 10;
     let mut action = TimeoutAction::Drop;
     let mut reresolve_secs: u64 = 0;
 
