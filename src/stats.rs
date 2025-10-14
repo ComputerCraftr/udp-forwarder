@@ -1,3 +1,4 @@
+use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomOrdering};
 use std::sync::{Arc, Mutex};
@@ -127,23 +128,23 @@ pub fn spawn_stats_printer(
                     .unwrap_or_else(|| "null".to_string())
             };
             let up_s = { current_up_addr.lock().unwrap().to_string() };
-            println!(
-                "{{\"uptime_s\":{},\"locked\":{},\"client\":\"{}\",\"upstream\":\"{}\",\"c2u_pkts\":{},\"c2u_bytes\":{},\"c2u_avg_us\":{},\"c2u_max_us\":{},\"c2u_errs\":{},\"u2c_pkts\":{},\"u2c_bytes\":{},\"u2c_avg_us\":{},\"u2c_max_us\":{},\"u2c_errs\":{}}}",
-                uptime,
-                locked_now,
-                client_s,
-                up_s,
-                c2u_pkts,
-                c2u_bytes,
-                c2u_avg_us,
-                c2u_max_us,
-                c2u_errs,
-                u2c_pkts,
-                u2c_bytes,
-                u2c_avg_us,
-                u2c_max_us,
-                u2c_errs
-            );
+            let line = json!({
+                "uptime_s": uptime,
+                "locked": locked_now,
+                "client": client_s,
+                "upstream": up_s,
+                "c2u_pkts": c2u_pkts,
+                "c2u_bytes": c2u_bytes,
+                "c2u_avg_us": c2u_avg_us,
+                "c2u_max_us": c2u_max_us,
+                "c2u_errs": c2u_errs,
+                "u2c_pkts": u2c_pkts,
+                "u2c_bytes": u2c_bytes,
+                "u2c_avg_us": u2c_avg_us,
+                "u2c_max_us": u2c_max_us,
+                "u2c_errs": u2c_errs
+            });
+            println!("{}", line.to_string());
         }
     });
 }
