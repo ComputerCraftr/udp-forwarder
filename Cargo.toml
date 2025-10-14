@@ -11,3 +11,4 @@ strip = "symbols"
 debug = 0
 
 [dependencies]
+serde_json = "1.0.145"
