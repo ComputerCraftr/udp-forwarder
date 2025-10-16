@@ -77,16 +77,18 @@ fn main() -> io::Result<()> {
                                     let t_recv = Instant::now();
                                     let dest = upstream_mgr_a.current_dest();
                                     let sock = upstream_mgr_a.clone_socket();
-                                    match sock.send_to(&buf[..n], dest) {
-                                        Ok(_) => {
-                                            *last_seen_a.lock().unwrap() = Some(Instant::now());
-                                            stats_a
-                                                .add_c2u(n as u64, dur_ns(t_recv, Instant::now()));
-                                        }
-                                        Err(e) => {
-                                            eprintln!("upstream send_to error: {}", e);
-                                            stats_a.c2u_err();
-                                        }
+                                    if cfg.max_payload != 0 && n > cfg.max_payload {
+                                        eprintln!(
+                                            "dropping c2u packet: {} bytes exceeds max {}",
+                                            n, cfg.max_payload
+                                        );
+                                        stats_a.drop_c2u_oversize();
+                                    } else if let Err(e) = sock.send_to(&buf[..n], dest) {
+                                        eprintln!("upstream send_to error: {}", e);
+                                        stats_a.c2u_err();
+                                    } else {
+                                        *last_seen_a.lock().unwrap() = Some(Instant::now());
+                                        stats_a.add_c2u(n as u64, dur_ns(t_recv, Instant::now()));
                                     }
                                 }
                             }
@@ -120,10 +122,16 @@ fn main() -> io::Result<()> {
                 match sock.recv_from(&mut buf) {
                     Ok((n, _src)) => {
                         if locked_b.load(AtomOrdering::SeqCst) {
-                            if let Some(dst) = *client_peer_b.lock().unwrap() {
+                            if let Some(dest) = *client_peer_b.lock().unwrap() {
                                 let t_recv = Instant::now();
-                                if let Err(e) = client_sock_b.send_to(&buf[..n], dst) {
-                                    eprintln!("send_to client {} error: {}", dst, e);
+                                if cfg.max_payload != 0 && n > cfg.max_payload {
+                                    eprintln!(
+                                        "dropping u2c packet: {} bytes exceeds max {}",
+                                        n, cfg.max_payload
+                                    );
+                                    stats_b.drop_u2c_oversize();
+                                } else if let Err(e) = client_sock_b.send_to(&buf[..n], dest) {
+                                    eprintln!("send_to client {} error: {}", dest, e);
                                     stats_b.u2c_err();
                                 } else {
                                     *last_seen_b.lock().unwrap() = Some(Instant::now());
@@ -197,7 +205,7 @@ fn main() -> io::Result<()> {
         Arc::clone(&client_peer),
         Arc::clone(&upstream_mgr.current_addr),
         Arc::clone(&locked),
-        u64::from(cfg.stats_interval_mins) * 60,
+        u64::from(cfg.stats_interval_mins).saturating_mul(60),
     );
 
     // Keep main alive

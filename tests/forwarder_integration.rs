@@ -179,6 +179,103 @@ fn json_addr(v: &Json) -> SocketAddr {
 }
 
 #[test]
+fn enforce_max_payload_ipv4() {
+    let (up_addr, _up_thread) = spawn_udp_echo_server();
+    let client = bind_udp_v4_client();
+    let bin = find_forwarder_bin();
+    let mut child = Command::new(bin)
+        .arg("127.0.0.1:0")
+        .arg(up_addr.to_string())
+        .arg("--timeout-secs")
+        .arg("2")
+        .arg("--on-timeout")
+        .arg("exit")
+        .arg("--stats-interval-mins")
+        .arg("0")
+        .arg("--max-payload")
+        .arg("548")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn forwarder");
+
+    let listen_addr = wait_for_listen_addr(&mut child, Duration::from_secs(3));
+
+    // exactly safe payload (548) should pass
+    let ok = vec![0u8; 548];
+    client.send_to(&ok, listen_addr).unwrap();
+    let mut buf = [0u8; 2048];
+    let (_n, _src) = client.recv_from(&mut buf).expect("recv ok v4");
+
+    // one byte over should be dropped (no echo)
+    let over = vec![0u8; 549];
+    client.send_to(&over, listen_addr).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let drop_expected = client.recv_from(&mut buf).is_err();
+    assert!(drop_expected, "oversize v4 payload should be dropped");
+
+    // check stats reflect one drop
+    let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
+    assert_eq!(stats["drops_c2u_oversize"].as_u64().unwrap_or(0), 1);
+}
+
+#[test]
+fn enforce_max_payload_ipv6() {
+    let client = match bind_udp_v6_client() {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("no v6; skip");
+            return;
+        }
+    };
+    let (up_addr, _up) = match spawn_udp_echo_server_v6() {
+        Ok(t) => t,
+        Err(_) => {
+            eprintln!("no v6; skip");
+            return;
+        }
+    };
+    let bin = find_forwarder_bin();
+    let mut child = Command::new(bin)
+        .arg("[::1]:0")
+        .arg(up_addr.to_string())
+        .arg("--timeout-secs")
+        .arg("2")
+        .arg("--on-timeout")
+        .arg("exit")
+        .arg("--stats-interval-mins")
+        .arg("0")
+        .arg("--max-payload")
+        .arg("1232")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn forwarder");
+
+    let listen_addr = wait_for_listen_addr(&mut child, Duration::from_secs(3));
+
+    // exactly safe payload (1232) should pass
+    let ok = vec![0u8; 1232];
+    client.send_to(&ok, listen_addr).unwrap();
+    let mut buf = [0u8; 4096];
+    let (_n, _src) = client.recv_from(&mut buf).expect("recv ok v6");
+
+    // one byte over should be dropped
+    let over = vec![0u8; 1233];
+    client.send_to(&over, listen_addr).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let drop_expected = client.recv_from(&mut buf).is_err();
+    assert!(drop_expected, "oversize v6 payload should be dropped");
+
+    let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
+    assert_eq!(stats["drops_c2u_oversize"].as_u64().unwrap_or(0), 1);
+}
+
+#[test]
 fn single_client_forwarding_ipv4() {
     // upstream echo server
     let (up_addr, _up_thread) = spawn_udp_echo_server();

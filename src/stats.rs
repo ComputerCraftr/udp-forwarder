@@ -17,6 +17,8 @@ pub struct Stats {
     pub c2u_lat_ns_max: AtomicU64,
     pub u2c_lat_ns_sum: AtomicU64,
     pub u2c_lat_ns_max: AtomicU64,
+    pub drops_c2u_oversize: AtomicU64,
+    pub drops_u2c_oversize: AtomicU64,
 }
 
 impl Stats {
@@ -33,6 +35,8 @@ impl Stats {
             c2u_lat_ns_max: AtomicU64::new(0),
             u2c_lat_ns_sum: AtomicU64::new(0),
             u2c_lat_ns_max: AtomicU64::new(0),
+            drops_c2u_oversize: AtomicU64::new(0),
+            drops_u2c_oversize: AtomicU64::new(0),
         })
     }
 
@@ -79,6 +83,14 @@ impl Stats {
     pub fn u2c_err(&self) {
         self.u2c_send_errs.fetch_add(1, AtomOrdering::Relaxed);
     }
+
+    pub fn drop_c2u_oversize(&self) {
+        self.drops_c2u_oversize.fetch_add(1, AtomOrdering::Relaxed);
+    }
+
+    pub fn drop_u2c_oversize(&self) {
+        self.drops_u2c_oversize.fetch_add(1, AtomOrdering::Relaxed);
+    }
 }
 
 pub fn dur_ns(start: Instant, end: Instant) -> u64 {
@@ -102,6 +114,8 @@ pub fn spawn_stats_printer(
             let c2u_pkts = stats.c2u_pkts.load(AtomOrdering::Relaxed);
             let c2u_bytes = stats.c2u_bytes.load(AtomOrdering::Relaxed);
             let c2u_errs = stats.c2u_send_errs.load(AtomOrdering::Relaxed);
+            let drops_c2u_oversize = stats.drops_c2u_oversize.load(AtomOrdering::Relaxed);
+            let drops_u2c_oversize = stats.drops_u2c_oversize.load(AtomOrdering::Relaxed);
             let u2c_pkts = stats.u2c_pkts.load(AtomOrdering::Relaxed);
             let u2c_bytes = stats.u2c_bytes.load(AtomOrdering::Relaxed);
             let u2c_errs = stats.u2c_send_errs.load(AtomOrdering::Relaxed);
@@ -142,7 +156,9 @@ pub fn spawn_stats_printer(
                 "u2c_bytes": u2c_bytes,
                 "u2c_avg_us": u2c_avg_us,
                 "u2c_max_us": u2c_max_us,
-                "u2c_errs": u2c_errs
+                "u2c_errs": u2c_errs,
+                "drops_c2u_oversize": drops_c2u_oversize,
+                "drops_u2c_oversize": drops_u2c_oversize
             });
             println!("{}", line.to_string());
         }

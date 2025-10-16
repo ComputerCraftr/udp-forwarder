@@ -12,8 +12,9 @@ pub struct Config {
     pub upstream_target: String,   // FQDN:port or IP:port
     pub timeout_secs: u64,         // idle timeout for single client
     pub on_timeout: TimeoutAction, // drop | exit
-    pub reresolve_secs: u64,       // 0 = disabled
     pub stats_interval_mins: u32,  // JSON stats print interval
+    pub max_payload: usize,        // optional user-specified MTU/payload limit
+    pub reresolve_secs: u64,       // 0 = disabled
 }
 
 pub fn parse_args() -> Config {
@@ -30,7 +31,7 @@ pub fn parse_args() -> Config {
         eprintln!(
             "Usage: {} <listen_ip:port> <upstream_host_or_ip:port> \
              [--timeout-secs N] [--on-timeout drop|exit] \
-             [--reresolve-secs N] [--stats-interval-mins N]",
+             [--stats-interval-mins N] [--max-payload N] [--reresolve-secs N]",
             args[0]
         );
         process::exit(2);
@@ -42,8 +43,9 @@ pub fn parse_args() -> Config {
     // Defaults
     let mut timeout_secs: u64 = 10;
     let mut on_timeout = TimeoutAction::Drop;
-    let mut reresolve_secs: u64 = 0;
     let mut stats_interval_mins: u32 = 60;
+    let mut max_payload: usize = 0; // unlimited
+    let mut reresolve_secs: u64 = 0;
 
     // Flags
     let mut i = 3;
@@ -70,22 +72,32 @@ pub fn parse_args() -> Config {
                 };
                 i += 2;
             }
-            "--reresolve-secs" => {
-                reresolve_secs =
-                    args.get(i + 1)
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or_else(|| {
-                            eprintln!("invalid --reresolve-secs");
-                            process::exit(2)
-                        });
-                i += 2;
-            }
             "--stats-interval-mins" => {
                 stats_interval_mins =
                     args.get(i + 1)
                         .and_then(|s| s.parse().ok())
                         .unwrap_or_else(|| {
                             eprintln!("invalid --stats-interval-mins");
+                            process::exit(2)
+                        });
+                i += 2;
+            }
+            "--max-payload" => {
+                max_payload = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| {
+                        eprintln!("invalid --max-payload");
+                        process::exit(2)
+                    });
+                i += 2;
+            }
+            "--reresolve-secs" => {
+                reresolve_secs =
+                    args.get(i + 1)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or_else(|| {
+                            eprintln!("invalid --reresolve-secs");
                             process::exit(2)
                         });
                 i += 2;
@@ -102,7 +114,8 @@ pub fn parse_args() -> Config {
         upstream_target,
         timeout_secs,
         on_timeout,
-        reresolve_secs,
         stats_interval_mins,
+        max_payload,
+        reresolve_secs,
     }
 }
