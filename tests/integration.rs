@@ -45,7 +45,7 @@ fn enforce_max_payload_ipv4() {
 
     // check stats reflect one drop
     let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
-    assert_eq!(stats["drops_c2u_oversize"].as_u64().unwrap_or(0), 1);
+    assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn enforce_max_payload_ipv6() {
     assert!(drop_expected, "oversize v6 payload should be dropped");
 
     let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
-    assert_eq!(stats["drops_c2u_oversize"].as_u64().unwrap_or(0), 1);
+    assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
 
 #[test]
@@ -167,12 +167,20 @@ fn single_client_forwarding_ipv4() {
         stats["u2c_bytes"].as_u64().unwrap_or(0),
         payload.len() as u64
     );
+    assert_eq!(
+        stats["c2u_bytes_max"].as_u64().unwrap_or(0),
+        payload.len() as u64
+    );
+    assert_eq!(
+        stats["u2c_bytes_max"].as_u64().unwrap_or(0),
+        payload.len() as u64
+    );
 
     // Latency fields should be numbers (≥ 0)
-    assert!(stats["c2u_avg_us"].is_number());
-    assert!(stats["u2c_avg_us"].is_number());
-    assert!(stats["c2u_max_us"].is_number());
-    assert!(stats["u2c_max_us"].is_number());
+    assert!(stats["c2u_us_avg"].is_number());
+    assert!(stats["u2c_us_avg"].is_number());
+    assert!(stats["c2u_us_max"].is_number());
+    assert!(stats["u2c_us_max"].is_number());
 
     // after ~2s of idle it should exit; give it a moment
     let start = Instant::now();
@@ -255,10 +263,18 @@ fn single_client_forwarding_ipv6() {
         stats["u2c_bytes"].as_u64().unwrap_or(0),
         payload.len() as u64
     );
-    assert!(stats["c2u_avg_us"].is_number());
-    assert!(stats["u2c_avg_us"].is_number());
-    assert!(stats["c2u_max_us"].is_number());
-    assert!(stats["u2c_max_us"].is_number());
+    assert_eq!(
+        stats["c2u_bytes_max"].as_u64().unwrap_or(0),
+        payload.len() as u64
+    );
+    assert_eq!(
+        stats["u2c_bytes_max"].as_u64().unwrap_or(0),
+        payload.len() as u64
+    );
+    assert!(stats["c2u_us_avg"].is_number());
+    assert!(stats["u2c_us_avg"].is_number());
+    assert!(stats["c2u_us_max"].is_number());
+    assert!(stats["u2c_us_max"].is_number());
 
     // allow exit
     let start = Instant::now();

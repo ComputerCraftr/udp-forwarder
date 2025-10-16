@@ -9,9 +9,11 @@ pub struct Stats {
     pub start: Instant,
     pub c2u_pkts: AtomicU64,
     pub c2u_bytes: AtomicU64,
+    pub c2u_bytes_max: AtomicU64,
     pub c2u_send_errs: AtomicU64,
     pub u2c_pkts: AtomicU64,
     pub u2c_bytes: AtomicU64,
+    pub u2c_bytes_max: AtomicU64,
     pub u2c_send_errs: AtomicU64,
     pub c2u_lat_ns_sum: AtomicU64,
     pub c2u_lat_ns_max: AtomicU64,
@@ -27,9 +29,11 @@ impl Stats {
             start: Instant::now(),
             c2u_pkts: AtomicU64::new(0),
             c2u_bytes: AtomicU64::new(0),
+            c2u_bytes_max: AtomicU64::new(0),
             c2u_send_errs: AtomicU64::new(0),
             u2c_pkts: AtomicU64::new(0),
             u2c_bytes: AtomicU64::new(0),
+            u2c_bytes_max: AtomicU64::new(0),
             u2c_send_errs: AtomicU64::new(0),
             c2u_lat_ns_sum: AtomicU64::new(0),
             c2u_lat_ns_max: AtomicU64::new(0),
@@ -43,6 +47,20 @@ impl Stats {
     pub fn add_c2u(&self, bytes: u64, lat_ns: u64) {
         self.c2u_pkts.fetch_add(1, AtomOrdering::Relaxed);
         self.c2u_bytes.fetch_add(bytes, AtomOrdering::Relaxed);
+        // track max client->upstream packet size
+        loop {
+            let cur = self.c2u_bytes_max.load(AtomOrdering::Relaxed);
+            if bytes <= cur {
+                break;
+            }
+            if self
+                .c2u_bytes_max
+                .compare_exchange(cur, bytes, AtomOrdering::Relaxed, AtomOrdering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
         self.c2u_lat_ns_sum.fetch_add(lat_ns, AtomOrdering::Relaxed);
         loop {
             let cur = self.c2u_lat_ns_max.load(AtomOrdering::Relaxed);
@@ -65,6 +83,20 @@ impl Stats {
     pub fn add_u2c(&self, bytes: u64, lat_ns: u64) {
         self.u2c_pkts.fetch_add(1, AtomOrdering::Relaxed);
         self.u2c_bytes.fetch_add(bytes, AtomOrdering::Relaxed);
+        // track max upstream->client packet size
+        loop {
+            let cur = self.u2c_bytes_max.load(AtomOrdering::Relaxed);
+            if bytes <= cur {
+                break;
+            }
+            if self
+                .u2c_bytes_max
+                .compare_exchange(cur, bytes, AtomOrdering::Relaxed, AtomOrdering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
         self.u2c_lat_ns_sum.fetch_add(lat_ns, AtomOrdering::Relaxed);
         loop {
             let cur = self.u2c_lat_ns_max.load(AtomOrdering::Relaxed);
@@ -113,11 +145,13 @@ pub fn spawn_stats_printer(
             let uptime = stats.start.elapsed().as_secs();
             let c2u_pkts = stats.c2u_pkts.load(AtomOrdering::Relaxed);
             let c2u_bytes = stats.c2u_bytes.load(AtomOrdering::Relaxed);
+            let c2u_bytes_max = stats.c2u_bytes_max.load(AtomOrdering::Relaxed);
             let c2u_errs = stats.c2u_send_errs.load(AtomOrdering::Relaxed);
             let drops_c2u_oversize = stats.drops_c2u_oversize.load(AtomOrdering::Relaxed);
             let drops_u2c_oversize = stats.drops_u2c_oversize.load(AtomOrdering::Relaxed);
             let u2c_pkts = stats.u2c_pkts.load(AtomOrdering::Relaxed);
             let u2c_bytes = stats.u2c_bytes.load(AtomOrdering::Relaxed);
+            let u2c_bytes_max = stats.u2c_bytes_max.load(AtomOrdering::Relaxed);
             let u2c_errs = stats.u2c_send_errs.load(AtomOrdering::Relaxed);
             let c2u_lat_sum = stats.c2u_lat_ns_sum.load(AtomOrdering::Relaxed);
             let c2u_lat_max = stats.c2u_lat_ns_max.load(AtomOrdering::Relaxed);
@@ -149,16 +183,18 @@ pub fn spawn_stats_printer(
                 "upstream": up_s,
                 "c2u_pkts": c2u_pkts,
                 "c2u_bytes": c2u_bytes,
-                "c2u_avg_us": c2u_avg_us,
-                "c2u_max_us": c2u_max_us,
+                "c2u_bytes_max": c2u_bytes_max,
+                "c2u_drops_oversize": drops_c2u_oversize,
+                "c2u_us_avg": c2u_avg_us,
+                "c2u_us_max": c2u_max_us,
                 "c2u_errs": c2u_errs,
                 "u2c_pkts": u2c_pkts,
                 "u2c_bytes": u2c_bytes,
-                "u2c_avg_us": u2c_avg_us,
-                "u2c_max_us": u2c_max_us,
+                "u2c_bytes_max": u2c_bytes_max,
+                "u2c_drops_oversize": drops_u2c_oversize,
+                "u2c_us_avg": u2c_avg_us,
+                "u2c_us_max": u2c_max_us,
                 "u2c_errs": u2c_errs,
-                "drops_c2u_oversize": drops_c2u_oversize,
-                "drops_u2c_oversize": drops_u2c_oversize
             });
             println!("{}", line.to_string());
         }
