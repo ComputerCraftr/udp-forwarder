@@ -1,9 +1,11 @@
 use serde_json::json;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::upstream::UpstreamManager;
 
 pub struct Stats {
     pub start: Instant,
@@ -133,8 +135,7 @@ pub fn dur_ns(start: Instant, end: Instant) -> u64 {
 pub fn spawn_stats_printer(
     stats: Arc<Stats>,
     client_peer: Arc<Mutex<Option<SocketAddr>>>,
-    current_up_addr: Arc<Mutex<SocketAddr>>,
-    locked: Arc<AtomicBool>,
+    upstream_mgr: Arc<UpstreamManager>,
     every_secs: u64,
 ) {
     let every = every_secs.max(1);
@@ -169,13 +170,13 @@ pub fn spawn_stats_printer(
             };
             let c2u_max_us = c2u_lat_max / 1000;
             let u2c_max_us = u2c_lat_max / 1000;
-            let locked_now = locked.load(AtomOrdering::Relaxed);
-            let client_s = {
-                let c = client_peer.lock().unwrap();
-                c.map(|a| a.to_string())
-                    .unwrap_or_else(|| "null".to_string())
-            };
-            let up_s = { current_up_addr.lock().unwrap().to_string() };
+            // Read client once; derive locked state from it
+            let client_opt = { *client_peer.lock().unwrap() };
+            let locked_now = client_opt.is_some();
+            let client_s = client_opt
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "null".to_string());
+            let up_s = { upstream_mgr.current_dest().to_string() };
             let line = json!({
                 "uptime_s": uptime,
                 "locked": locked_now,

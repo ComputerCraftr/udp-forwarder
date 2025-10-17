@@ -59,39 +59,43 @@ fn main() -> io::Result<()> {
             loop {
                 match client_sock_a.recv_from(&mut buf) {
                     Ok((n, src)) => {
-                        // Lock to first client
-                        if !locked_a.load(AtomOrdering::SeqCst) {
+                        let t_recv = Instant::now();
+                        // Lock to first client (if needed) and check match using a single mutex lock
+                        let mut did_initial_lock = false;
+                        let matched = {
                             let mut slot = client_peer_a.lock().unwrap();
                             if slot.is_none() {
                                 *slot = Some(src);
-                                locked_a.store(true, AtomOrdering::SeqCst);
-                                *last_seen_a.lock().unwrap() = Some(Instant::now());
-                                println!("Locked to single client {}", src);
-                                upstream_mgr_a.apply_fresh(&upstream_target_a, "Re-resolved");
+                                locked_a.store(true, AtomOrdering::Relaxed);
+                                did_initial_lock = true;
                             }
+                            did_initial_lock || Some(src) == *slot
+                        };
+                        if !matched {
+                            continue; // drop packet from non-locked client
                         }
-                        if locked_a.load(AtomOrdering::SeqCst) {
-                            let slot = client_peer_a.lock().unwrap();
-                            if let Some(locked_client) = *slot {
-                                if src == locked_client {
-                                    let t_recv = Instant::now();
-                                    let dest = upstream_mgr_a.current_dest();
-                                    let sock = upstream_mgr_a.clone_socket();
-                                    if cfg.max_payload != 0 && n > cfg.max_payload {
-                                        eprintln!(
-                                            "dropping c2u packet: {} bytes exceeds max {}",
-                                            n, cfg.max_payload
-                                        );
-                                        stats_a.drop_c2u_oversize();
-                                    } else if let Err(e) = sock.send_to(&buf[..n], dest) {
-                                        eprintln!("upstream send_to error: {}", e);
-                                        stats_a.c2u_err();
-                                    } else {
-                                        *last_seen_a.lock().unwrap() = Some(Instant::now());
-                                        stats_a.add_c2u(n as u64, dur_ns(t_recv, Instant::now()));
-                                    }
-                                }
-                            }
+
+                        if did_initial_lock {
+                            println!("Locked to single client {}", src);
+                            *last_seen_a.lock().unwrap() = Some(t_recv);
+                            upstream_mgr_a.apply_fresh(&upstream_target_a, "Re-resolved");
+                        }
+
+                        let dest = upstream_mgr_a.current_dest();
+                        let sock = upstream_mgr_a.clone_socket();
+                        if cfg.max_payload != 0 && n > cfg.max_payload {
+                            eprintln!(
+                                "dropping c2u packet: {} bytes exceeds max {}",
+                                n, cfg.max_payload
+                            );
+                            stats_a.drop_c2u_oversize();
+                        } else if let Err(e) = sock.send_to(&buf[..n], dest) {
+                            eprintln!("upstream send_to error: {}", e);
+                            stats_a.c2u_err();
+                        } else {
+                            let t_send = Instant::now();
+                            *last_seen_a.lock().unwrap() = Some(t_send);
+                            stats_a.add_c2u(n as u64, dur_ns(t_recv, t_send));
                         }
                     }
                     Err(ref e)
@@ -110,7 +114,6 @@ fn main() -> io::Result<()> {
     {
         let client_sock_b = client_sock.try_clone()?;
         let client_peer_b = Arc::clone(&client_peer);
-        let locked_b = Arc::clone(&locked);
         let last_seen_b = Arc::clone(&last_seen);
         let upstream_mgr_b = Arc::clone(&upstream_mgr);
         let stats_b = Arc::clone(&stats);
@@ -121,22 +124,22 @@ fn main() -> io::Result<()> {
                 let sock = upstream_mgr_b.clone_socket();
                 match sock.recv_from(&mut buf) {
                     Ok((n, _src)) => {
-                        if locked_b.load(AtomOrdering::SeqCst) {
-                            if let Some(dest) = *client_peer_b.lock().unwrap() {
-                                let t_recv = Instant::now();
-                                if cfg.max_payload != 0 && n > cfg.max_payload {
-                                    eprintln!(
-                                        "dropping u2c packet: {} bytes exceeds max {}",
-                                        n, cfg.max_payload
-                                    );
-                                    stats_b.drop_u2c_oversize();
-                                } else if let Err(e) = client_sock_b.send_to(&buf[..n], dest) {
-                                    eprintln!("send_to client {} error: {}", dest, e);
-                                    stats_b.u2c_err();
-                                } else {
-                                    *last_seen_b.lock().unwrap() = Some(Instant::now());
-                                    stats_b.add_u2c(n as u64, dur_ns(t_recv, Instant::now()));
-                                }
+                        let t_recv = Instant::now();
+                        let dest_opt = { *client_peer_b.lock().unwrap() };
+                        if let Some(dest) = dest_opt {
+                            if cfg.max_payload != 0 && n > cfg.max_payload {
+                                eprintln!(
+                                    "dropping u2c packet: {} bytes exceeds max {}",
+                                    n, cfg.max_payload
+                                );
+                                stats_b.drop_u2c_oversize();
+                            } else if let Err(e) = client_sock_b.send_to(&buf[..n], dest) {
+                                eprintln!("send_to client {} error: {}", dest, e);
+                                stats_b.u2c_err();
+                            } else {
+                                let t_send = Instant::now();
+                                *last_seen_b.lock().unwrap() = Some(t_send);
+                                stats_b.add_u2c(n as u64, dur_ns(t_recv, t_send));
                             }
                         }
                     }
@@ -161,20 +164,18 @@ fn main() -> io::Result<()> {
             let timeout = Duration::from_secs(cfg.timeout_secs);
             loop {
                 thread::sleep(Duration::from_secs(1));
-                if locked_w.load(AtomOrdering::SeqCst) {
+                if locked_w.load(AtomOrdering::Relaxed) {
                     let now = Instant::now();
-                    let expired = {
-                        let ls = last_seen_w.lock().unwrap();
-                        match *ls {
-                            Some(t) => now.duration_since(t) >= timeout,
-                            None => false,
-                        }
+                    let ls_opt = { *last_seen_w.lock().unwrap() }; // one-liner lock read
+                    let expired = match ls_opt {
+                        Some(t) => now.duration_since(t) >= timeout,
+                        None => false,
                     };
                     if expired {
                         match cfg.on_timeout {
                             TimeoutAction::Drop => {
                                 *client_peer_w.lock().unwrap() = None;
-                                locked_w.store(false, AtomOrdering::SeqCst);
+                                locked_w.store(false, AtomOrdering::Relaxed);
                                 *last_seen_w.lock().unwrap() = None;
                                 eprintln!(
                                     "Idle timeout reached ({}s): dropped locked client; waiting for a new client",
@@ -203,8 +204,7 @@ fn main() -> io::Result<()> {
     spawn_stats_printer(
         Arc::clone(&stats),
         Arc::clone(&client_peer),
-        Arc::clone(&upstream_mgr.current_addr),
-        Arc::clone(&locked),
+        Arc::clone(&upstream_mgr),
         u64::from(cfg.stats_interval_mins).saturating_mul(60),
     );
 

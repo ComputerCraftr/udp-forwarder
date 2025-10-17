@@ -68,7 +68,7 @@ impl UpstreamManager {
             let period = Duration::from_secs(every_secs);
             loop {
                 thread::sleep(period);
-                if !locked.load(AtomOrdering::SeqCst) {
+                if !locked.load(AtomOrdering::Relaxed) {
                     continue;
                 }
                 mgr.apply_fresh(&target, "Periodic re-resolve");
