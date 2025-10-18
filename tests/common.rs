@@ -1,6 +1,6 @@
 // tests/common.rs — shared helpers for integration and stress tests
 use serde_json::Value as Json;
-use std::io::{self, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::net::{
     Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs, UdpSocket,
 };
@@ -15,6 +15,8 @@ pub fn bind_udp_v4_client() -> UdpSocket {
         .unwrap();
     sock
 }
+
+#[allow(dead_code)]
 pub fn bind_udp_v6_client() -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
     sock.set_read_timeout(Some(Duration::from_millis(500)))?;
@@ -42,6 +44,8 @@ pub fn spawn_udp_echo_server_v4() -> (SocketAddr, thread::JoinHandle<()>) {
     });
     (addr, handle)
 }
+
+#[allow(dead_code)]
 pub fn spawn_udp_echo_server_v6() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
     sock.set_read_timeout(Some(Duration::from_millis(500)))?;
@@ -87,26 +91,30 @@ pub fn find_forwarder_bin() -> String {
     );
 }
 
-pub fn wait_for_listen_addr(child: &mut std::process::Child, max_wait: Duration) -> SocketAddr {
+/// Take ownership of the child's stdout, returning the ChildStdout handle.
+pub fn take_child_stdout(child: &mut std::process::Child) -> std::process::ChildStdout {
+    child.stdout.take().expect("child stdout missing")
+}
+
+/// Wait for a "Listening on ..." line from a generic reader, and parse the socket address.
+pub fn wait_for_listen_addr_from<R: Read>(reader: &mut R, max_wait: Duration) -> SocketAddr {
     let start = Instant::now();
     let mut buf = String::new();
-    let stdout = child.stdout.as_mut().expect("child stdout missing");
+    let mut r = BufReader::new(reader);
     while start.elapsed() < max_wait {
-        let mut chunk = [0u8; 4096];
-        match stdout.read(&mut chunk) {
+        let mut line = String::new();
+        match r.read_line(&mut line) {
             Ok(0) => thread::sleep(Duration::from_millis(25)),
-            Ok(n) => {
-                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                if let Some(line) = buf.lines().find(|l| l.starts_with("Listening on ")) {
-                    if let Some(rest) = line.strip_prefix("Listening on ") {
-                        if let Some((addr_str, _)) = rest.split_once(',') {
-                            let mut it = addr_str
-                                .to_string()
-                                .to_socket_addrs()
-                                .expect("parse printed addr");
-                            if let Some(sa) = it.next() {
-                                return sa;
-                            }
+            Ok(_) => {
+                buf.push_str(&line);
+                if let Some(rest) = line.strip_prefix("Listening on ") {
+                    if let Some((addr_str, _)) = rest.split_once(',') {
+                        let mut it = addr_str
+                            .to_string()
+                            .to_socket_addrs()
+                            .expect("parse printed addr");
+                        if let Some(sa) = it.next() {
+                            return sa;
                         }
                     }
                 }
@@ -115,24 +123,25 @@ pub fn wait_for_listen_addr(child: &mut std::process::Child, max_wait: Duration)
         }
     }
     panic!(
-        "did not see 'Listening on' line in forwarder stdout within {:?}; saw: {}",
+        "did not see 'Listening on' line within {:?}; saw: {}",
         max_wait, buf
     );
 }
 
-pub fn wait_for_stats_json(child: &mut std::process::Child, max_wait: Duration) -> Json {
+/// Wait for a JSON stats line from a generic reader.
+pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> Json {
     let start = Instant::now();
-    let stdout = child.stdout.as_mut().expect("child stdout missing");
     let mut buf = String::new();
+    let mut r = BufReader::new(reader);
     while start.elapsed() < max_wait {
-        let mut chunk = [0u8; 4096];
-        match stdout.read(&mut chunk) {
+        let mut line = String::new();
+        match r.read_line(&mut line) {
             Ok(0) => thread::sleep(Duration::from_millis(25)),
-            Ok(n) => {
-                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                for line in buf.lines() {
-                    if line.starts_with('{') && line.ends_with('}') {
-                        if let Ok(json) = serde_json::from_str::<Json>(line) {
+            Ok(_) => {
+                buf.push_str(&line);
+                for l in buf.lines().rev() {
+                    if l.starts_with('{') && l.ends_with('}') {
+                        if let Ok(json) = serde_json::from_str::<Json>(l) {
                             return json;
                         }
                     }
@@ -147,6 +156,7 @@ pub fn wait_for_stats_json(child: &mut std::process::Child, max_wait: Duration) 
     );
 }
 
+#[allow(dead_code)]
 pub fn json_addr(v: &Json) -> SocketAddr {
     let s = v.as_str().expect("expected string socket addr in JSON");
     s.parse::<SocketAddr>()

@@ -5,7 +5,7 @@ mod upstream;
 
 use cli::{TimeoutAction, parse_args};
 use net::{make_udp_socket, resolve_first};
-use stats::{Stats, dur_ns, spawn_stats_printer};
+use stats::Stats;
 use upstream::UpstreamManager;
 
 use std::io;
@@ -32,6 +32,7 @@ fn main() -> io::Result<()> {
     let last_seen: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
     let stats = Stats::new();
+    let should_exit = Arc::new(AtomicBool::new(false));
 
     println!(
         "Listening on {}, forwarding to upstream {}. Waiting for first client...",
@@ -53,6 +54,7 @@ fn main() -> io::Result<()> {
         let upstream_mgr_a = Arc::clone(&upstream_mgr);
         let upstream_target_a = cfg.upstream_target.clone();
         let stats_a = Arc::clone(&stats);
+        let should_exit_a = Arc::clone(&should_exit);
 
         thread::spawn(move || {
             let mut buf = vec![0u8; 65535];
@@ -95,7 +97,10 @@ fn main() -> io::Result<()> {
                         } else {
                             let t_send = Instant::now();
                             *last_seen_a.lock().unwrap() = Some(t_send);
-                            stats_a.add_c2u(n as u64, dur_ns(t_recv, t_send));
+                            stats_a.add_c2u(n as u64, t_recv, t_send);
+                            if should_exit_a.load(AtomOrdering::Relaxed) {
+                                return;
+                            }
                         }
                     }
                     Err(ref e)
@@ -117,6 +122,7 @@ fn main() -> io::Result<()> {
         let last_seen_b = Arc::clone(&last_seen);
         let upstream_mgr_b = Arc::clone(&upstream_mgr);
         let stats_b = Arc::clone(&stats);
+        let should_exit_b = Arc::clone(&should_exit);
 
         thread::spawn(move || {
             let mut buf = vec![0u8; 65535];
@@ -139,7 +145,10 @@ fn main() -> io::Result<()> {
                             } else {
                                 let t_send = Instant::now();
                                 *last_seen_b.lock().unwrap() = Some(t_send);
-                                stats_b.add_u2c(n as u64, dur_ns(t_recv, t_send));
+                                stats_b.add_u2c(n as u64, t_recv, t_send);
+                                if should_exit_b.load(AtomOrdering::Relaxed) {
+                                    return;
+                                }
                             }
                         }
                     }
@@ -160,6 +169,7 @@ fn main() -> io::Result<()> {
         let client_peer_w = Arc::clone(&client_peer);
         let locked_w = Arc::clone(&locked);
         let last_seen_w = Arc::clone(&last_seen);
+        let should_exit_w = Arc::clone(&should_exit);
         thread::spawn(move || {
             let timeout = Duration::from_secs(cfg.timeout_secs);
             loop {
@@ -184,7 +194,8 @@ fn main() -> io::Result<()> {
                             }
                             TimeoutAction::Exit => {
                                 eprintln!("Idle timeout reached ({}s): exiting", cfg.timeout_secs);
-                                std::process::exit(0);
+                                should_exit_w.store(true, AtomOrdering::Relaxed);
+                                return;
                             }
                         }
                     }
@@ -201,11 +212,11 @@ fn main() -> io::Result<()> {
     );
 
     // Stats thread
-    spawn_stats_printer(
-        Arc::clone(&stats),
+    stats.spawn_stats_printer(
         Arc::clone(&client_peer),
         Arc::clone(&upstream_mgr),
         u64::from(cfg.stats_interval_mins).saturating_mul(60),
+        Arc::clone(&should_exit),
     );
 
     // Keep main alive

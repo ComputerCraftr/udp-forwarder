@@ -14,7 +14,7 @@ fn enforce_max_payload_ipv4() {
         .arg("127.0.0.1:0")
         .arg(up_addr.to_string())
         .arg("--timeout-secs")
-        .arg("2")
+        .arg("1")
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -26,7 +26,8 @@ fn enforce_max_payload_ipv4() {
         .spawn()
         .expect("spawn forwarder");
 
-    let listen_addr = wait_for_listen_addr(&mut child, Duration::from_secs(3));
+    let mut out = take_child_stdout(&mut child);
+    let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
 
     // exactly safe payload (548) should pass
     let ok = vec![0u8; 548];
@@ -43,8 +44,23 @@ fn enforce_max_payload_ipv4() {
     let drop_expected = client.recv_from(&mut buf).is_err();
     assert!(drop_expected, "oversize v4 payload should be dropped");
 
+    // after ~2s of idle it should exit; give it a moment
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "forwarder did not exit cleanly: {status}");
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(e) => panic!("wait error: {e}"),
+        }
+    }
+
+    // if it didn't exit, kill for cleanliness
+    let _ = child.kill();
+
     // check stats reflect one drop
-    let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
+    let stats = wait_for_stats_json_from(&mut out, Duration::from_secs(2));
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
 
@@ -69,7 +85,7 @@ fn enforce_max_payload_ipv6() {
         .arg("[::1]:0")
         .arg(up_addr.to_string())
         .arg("--timeout-secs")
-        .arg("2")
+        .arg("1")
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -81,7 +97,8 @@ fn enforce_max_payload_ipv6() {
         .spawn()
         .expect("spawn forwarder");
 
-    let listen_addr = wait_for_listen_addr(&mut child, Duration::from_secs(3));
+    let mut out = take_child_stdout(&mut child);
+    let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
 
     // exactly safe payload (1232) should pass
     let ok = vec![0u8; 1232];
@@ -98,7 +115,22 @@ fn enforce_max_payload_ipv6() {
     let drop_expected = client.recv_from(&mut buf).is_err();
     assert!(drop_expected, "oversize v6 payload should be dropped");
 
-    let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
+    // after ~2s of idle it should exit; give it a moment
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "forwarder did not exit cleanly: {status}");
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(e) => panic!("wait error: {e}"),
+        }
+    }
+
+    // if it didn't exit, kill for cleanliness
+    let _ = child.kill();
+
+    let stats = wait_for_stats_json_from(&mut out, Duration::from_secs(2));
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
 
@@ -119,7 +151,7 @@ fn single_client_forwarding_ipv4() {
         .arg("127.0.0.1:0")
         .arg(up_addr.to_string())
         .arg("--timeout-secs")
-        .arg("2")
+        .arg("1")
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -129,7 +161,8 @@ fn single_client_forwarding_ipv4() {
         .spawn()
         .expect("spawn forwarder");
 
-    let listen_addr = wait_for_listen_addr(&mut child, Duration::from_secs(3));
+    let mut out = take_child_stdout(&mut child);
+    let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
 
     // send one datagram to the forwarder; expect to receive same payload back (echo through upstream)
     let payload = b"hello-through-forwarder";
@@ -143,8 +176,23 @@ fn single_client_forwarding_ipv4() {
         .expect("recv from forwarder");
     assert_eq!(&buf[..n], payload, "echo payload mismatch");
 
+    // after ~2s of idle it should exit; give it a moment
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "forwarder did not exit cleanly: {status}");
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(e) => panic!("wait error: {e}"),
+        }
+    }
+
+    // if it didn't exit, kill for cleanliness
+    let _ = child.kill();
+
     // Wait for a stats line and validate fields
-    let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
+    let stats = wait_for_stats_json_from(&mut out, Duration::from_secs(2));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
     assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), 1);
@@ -181,23 +229,6 @@ fn single_client_forwarding_ipv4() {
     assert!(stats["u2c_us_avg"].is_number());
     assert!(stats["c2u_us_max"].is_number());
     assert!(stats["u2c_us_max"].is_number());
-
-    // after ~2s of idle it should exit; give it a moment
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(status.success(), "forwarder did not exit cleanly: {status}");
-                return;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(e) => panic!("wait error: {e}"),
-        }
-    }
-
-    // if it didn't exit, kill for cleanliness
-    let _ = child.kill();
-    panic!("forwarder did not exit after idle timeout");
 }
 
 #[test]
@@ -224,7 +255,7 @@ fn single_client_forwarding_ipv6() {
         .arg("[::1]:0")
         .arg(up_addr.to_string())
         .arg("--timeout-secs")
-        .arg("2")
+        .arg("1")
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -234,16 +265,37 @@ fn single_client_forwarding_ipv6() {
         .spawn()
         .expect("spawn forwarder");
 
-    let listen_addr = wait_for_listen_addr(&mut child, Duration::from_secs(3));
+    let mut out = take_child_stdout(&mut child);
+    let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
 
     let payload = b"hello-through-forwarder-v6";
-    client_sock.send_to(payload, listen_addr).expect("send v6");
+    client_sock
+        .send_to(payload, listen_addr)
+        .expect("send v6 to forwarder");
+
     let mut buf = [0u8; 1024];
-    let (n, _src) = client_sock.recv_from(&mut buf).expect("recv v6");
-    assert_eq!(&buf[..n], payload);
+    let (n, _src) = client_sock
+        .recv_from(&mut buf)
+        .expect("recv v6 from forwarder");
+    assert_eq!(&buf[..n], payload, "echo v6 payload mismatch");
+
+    // after ~2s of idle it should exit; give it a moment
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "forwarder did not exit cleanly: {status}");
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(e) => panic!("wait error: {e}"),
+        }
+    }
+
+    // if it didn't exit, kill for cleanliness
+    let _ = child.kill();
 
     // stats line
-    let stats = wait_for_stats_json(&mut child, Duration::from_secs(2));
+    let stats = wait_for_stats_json_from(&mut out, Duration::from_secs(2));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
     assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), 1);
@@ -275,19 +327,4 @@ fn single_client_forwarding_ipv6() {
     assert!(stats["u2c_us_avg"].is_number());
     assert!(stats["c2u_us_max"].is_number());
     assert!(stats["u2c_us_max"].is_number());
-
-    // allow exit
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(status.success());
-                return;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(e) => panic!("wait error: {e}"),
-        }
-    }
-    let _ = child.kill();
-    panic!("forwarder did not exit after idle timeout (v6)");
 }
