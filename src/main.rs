@@ -58,7 +58,13 @@ fn main() -> io::Result<()> {
 
         thread::spawn(move || {
             let mut buf = vec![0u8; 65535];
+            // Cache upstream socket and destination; refresh only when version changes
+            let (mut up_sock, mut dest, mut ver) = upstream_mgr_a.refresh_handles();
             loop {
+                // Cheap hot-path check: only refresh when manager version changes
+                if ver != upstream_mgr_a.version() {
+                    (up_sock, dest, ver) = upstream_mgr_a.refresh_handles();
+                }
                 match client_sock_a.recv_from(&mut buf) {
                     Ok((n, src)) => {
                         let t_recv = Instant::now();
@@ -71,7 +77,7 @@ fn main() -> io::Result<()> {
                                 locked_a.store(true, AtomOrdering::Relaxed);
                                 did_initial_lock = true;
                             }
-                            did_initial_lock || Some(src) == *slot
+                            Some(src) == *slot
                         };
                         if !matched {
                             continue; // drop packet from non-locked client
@@ -83,15 +89,13 @@ fn main() -> io::Result<()> {
                             upstream_mgr_a.apply_fresh(&upstream_target_a, "Re-resolved");
                         }
 
-                        let dest = upstream_mgr_a.current_dest();
-                        let sock = upstream_mgr_a.clone_socket();
                         if cfg.max_payload != 0 && n > cfg.max_payload {
                             eprintln!(
                                 "dropping c2u packet: {} bytes exceeds max {}",
                                 n, cfg.max_payload
                             );
                             stats_a.drop_c2u_oversize();
-                        } else if let Err(e) = sock.send_to(&buf[..n], dest) {
+                        } else if let Err(e) = up_sock.send_to(&buf[..n], dest) {
                             eprintln!("upstream send_to error: {}", e);
                             stats_a.c2u_err();
                         } else {
@@ -126,9 +130,14 @@ fn main() -> io::Result<()> {
 
         thread::spawn(move || {
             let mut buf = vec![0u8; 65535];
+            // Cache upstream socket and destination; refresh only when version changes
+            let (mut up_sock, _, mut ver) = upstream_mgr_b.refresh_handles();
             loop {
-                let sock = upstream_mgr_b.clone_socket();
-                match sock.recv_from(&mut buf) {
+                // Cheap hot-path check: refresh local handles only when version changes
+                if ver != upstream_mgr_b.version() {
+                    (up_sock, _, ver) = upstream_mgr_b.refresh_handles();
+                }
+                match up_sock.recv_from(&mut buf) {
                     Ok((n, _src)) => {
                         let t_recv = Instant::now();
                         let dest_opt = { *client_peer_b.lock().unwrap() };
