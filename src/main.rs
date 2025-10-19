@@ -4,19 +4,20 @@ mod stats;
 mod upstream;
 
 use cli::{TimeoutAction, parse_args};
-use net::{make_udp_socket, resolve_first};
+use net::{make_udp_socket, resolve_first, send_payload};
 use stats::Stats;
 use upstream::UpstreamManager;
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering as AtomOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 fn main() -> io::Result<()> {
     let cfg = parse_args();
+    let t_start = Instant::now();
 
     // Initial upstream resolution + manager
     let initial_up = resolve_first(&cfg.upstream_target).expect("bad upstream addr");
@@ -29,7 +30,7 @@ fn main() -> io::Result<()> {
     // Single-client state
     let client_peer: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
     let locked = Arc::new(AtomicBool::new(false));
-    let last_seen: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let last_seen_ns: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 
     let stats = Stats::new();
     let should_exit = Arc::new(AtomicBool::new(false));
@@ -50,61 +51,48 @@ fn main() -> io::Result<()> {
         let client_sock_a = client_sock.try_clone()?;
         let client_peer_a = Arc::clone(&client_peer);
         let locked_a = Arc::clone(&locked);
-        let last_seen_a = Arc::clone(&last_seen);
+        let last_seen_a = Arc::clone(&last_seen_ns);
         let upstream_mgr_a = Arc::clone(&upstream_mgr);
         let upstream_target_a = cfg.upstream_target.clone();
         let stats_a = Arc::clone(&stats);
-        let should_exit_a = Arc::clone(&should_exit);
 
         thread::spawn(move || {
             let mut buf = vec![0u8; 65535];
             // Cache upstream socket and destination; refresh only when version changes
             let (mut up_sock, mut dest, mut ver) = upstream_mgr_a.refresh_handles();
+            // Local cache of the currently locked client to avoid per-packet locking
+            let mut local_client: Option<SocketAddr> = None;
             loop {
                 // Cheap hot-path check: only refresh when manager version changes
                 if ver != upstream_mgr_a.version() {
                     (up_sock, dest, ver) = upstream_mgr_a.refresh_handles();
                 }
                 match client_sock_a.recv_from(&mut buf) {
-                    Ok((n, src)) => {
+                    Ok((len, src)) => {
                         let t_recv = Instant::now();
-                        // Lock to first client (if needed) and check match using a single mutex lock
-                        let mut did_initial_lock = false;
-                        let matched = {
-                            let mut slot = client_peer_a.lock().unwrap();
-                            if slot.is_none() {
-                                *slot = Some(src);
-                                locked_a.store(true, AtomOrdering::Relaxed);
-                                did_initial_lock = true;
-                            }
-                            Some(src) == *slot
-                        };
-                        if !matched {
-                            continue; // drop packet from non-locked client
-                        }
-
-                        if did_initial_lock {
+                        // If we're not globally locked, clear local cache and lock to this src once
+                        if !locked_a.load(AtomOrdering::Relaxed) {
+                            local_client = Some(src);
+                            *client_peer_a.lock().unwrap() = Some(src);
+                            locked_a.store(true, AtomOrdering::Relaxed);
                             println!("Locked to single client {}", src);
-                            *last_seen_a.lock().unwrap() = Some(t_recv);
                             upstream_mgr_a.apply_fresh(&upstream_target_a, "Re-resolved");
                         }
 
-                        if cfg.max_payload != 0 && n > cfg.max_payload {
-                            eprintln!(
-                                "dropping c2u packet: {} bytes exceeds max {}",
-                                n, cfg.max_payload
+                        // Forward if we have a local locked client matching this src
+                        if Some(src) == local_client {
+                            send_payload(
+                                true,
+                                t_start,
+                                t_recv,
+                                cfg.max_payload,
+                                &stats_a,
+                                &last_seen_a,
+                                &up_sock,
+                                &buf,
+                                len,
+                                dest,
                             );
-                            stats_a.drop_c2u_oversize();
-                        } else if let Err(e) = up_sock.send_to(&buf[..n], dest) {
-                            eprintln!("upstream send_to error: {}", e);
-                            stats_a.c2u_err();
-                        } else {
-                            let t_send = Instant::now();
-                            *last_seen_a.lock().unwrap() = Some(t_send);
-                            stats_a.add_c2u(n as u64, t_recv, t_send);
-                            if should_exit_a.load(AtomOrdering::Relaxed) {
-                                return;
-                            }
                         }
                     }
                     Err(ref e)
@@ -123,41 +111,56 @@ fn main() -> io::Result<()> {
     {
         let client_sock_b = client_sock.try_clone()?;
         let client_peer_b = Arc::clone(&client_peer);
-        let last_seen_b = Arc::clone(&last_seen);
+        let locked_b = Arc::clone(&locked);
+        let last_seen_b = Arc::clone(&last_seen_ns);
         let upstream_mgr_b = Arc::clone(&upstream_mgr);
         let stats_b = Arc::clone(&stats);
-        let should_exit_b = Arc::clone(&should_exit);
 
         thread::spawn(move || {
             let mut buf = vec![0u8; 65535];
             // Cache upstream socket and destination; refresh only when version changes
             let (mut up_sock, _, mut ver) = upstream_mgr_b.refresh_handles();
+            // Local cache of the locked client destination for fast send
+            let mut local_dest: Option<SocketAddr> = None;
             loop {
                 // Cheap hot-path check: refresh local handles only when version changes
                 if ver != upstream_mgr_b.version() {
                     (up_sock, _, ver) = upstream_mgr_b.refresh_handles();
                 }
                 match up_sock.recv_from(&mut buf) {
-                    Ok((n, _src)) => {
+                    Ok((len, _src)) => {
                         let t_recv = Instant::now();
-                        let dest_opt = { *client_peer_b.lock().unwrap() };
-                        if let Some(dest) = dest_opt {
-                            if cfg.max_payload != 0 && n > cfg.max_payload {
-                                eprintln!(
-                                    "dropping u2c packet: {} bytes exceeds max {}",
-                                    n, cfg.max_payload
+                        // Refresh local cached destination when global lock state changes
+                        if !locked_b.load(AtomOrdering::Relaxed) {
+                            local_dest = None;
+                        } else if let Some(dest) = local_dest {
+                            send_payload(
+                                false,
+                                t_start,
+                                t_recv,
+                                cfg.max_payload,
+                                &stats_b,
+                                &last_seen_b,
+                                &client_sock_b,
+                                &buf,
+                                len,
+                                dest,
+                            );
+                        } else {
+                            local_dest = *client_peer_b.lock().unwrap();
+                            if let Some(dest) = local_dest {
+                                send_payload(
+                                    false,
+                                    t_start,
+                                    t_recv,
+                                    cfg.max_payload,
+                                    &stats_b,
+                                    &last_seen_b,
+                                    &client_sock_b,
+                                    &buf,
+                                    len,
+                                    dest,
                                 );
-                                stats_b.drop_u2c_oversize();
-                            } else if let Err(e) = client_sock_b.send_to(&buf[..n], dest) {
-                                eprintln!("send_to client {} error: {}", dest, e);
-                                stats_b.u2c_err();
-                            } else {
-                                let t_send = Instant::now();
-                                *last_seen_b.lock().unwrap() = Some(t_send);
-                                stats_b.add_u2c(n as u64, t_recv, t_send);
-                                if should_exit_b.load(AtomOrdering::Relaxed) {
-                                    return;
-                                }
                             }
                         }
                     }
@@ -177,25 +180,25 @@ fn main() -> io::Result<()> {
     {
         let client_peer_w = Arc::clone(&client_peer);
         let locked_w = Arc::clone(&locked);
-        let last_seen_w = Arc::clone(&last_seen);
+        let last_seen_w = Arc::clone(&last_seen_ns);
         let should_exit_w = Arc::clone(&should_exit);
         thread::spawn(move || {
-            let timeout = Duration::from_secs(cfg.timeout_secs);
+            let timeout_ns = Duration::from_secs(cfg.timeout_secs)
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64;
             loop {
                 thread::sleep(Duration::from_secs(1));
                 if locked_w.load(AtomOrdering::Relaxed) {
                     let now = Instant::now();
-                    let ls_opt = { *last_seen_w.lock().unwrap() }; // one-liner lock read
-                    let expired = match ls_opt {
-                        Some(t) => now.duration_since(t) >= timeout,
-                        None => false,
-                    };
+                    let now_ns = Stats::dur_ns(t_start, now);
+                    let last_ns = last_seen_w.load(AtomOrdering::Relaxed);
+                    let expired = last_ns != 0 && now_ns.saturating_sub(last_ns) >= timeout_ns;
                     if expired {
                         match cfg.on_timeout {
                             TimeoutAction::Drop => {
                                 *client_peer_w.lock().unwrap() = None;
                                 locked_w.store(false, AtomOrdering::Relaxed);
-                                *last_seen_w.lock().unwrap() = None;
+                                last_seen_w.store(0, AtomOrdering::Relaxed);
                                 eprintln!(
                                     "Idle timeout reached ({}s): dropped locked client; waiting for a new client",
                                     cfg.timeout_secs

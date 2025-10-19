@@ -1,6 +1,47 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering as AtomOrdering};
+use std::time::{Duration, Instant};
+
+use crate::stats::Stats;
+
+#[inline]
+pub fn send_payload(
+    c2u: bool,
+    t_start: Instant,
+    t_recv: Instant,
+    max_payload: usize,
+    stats: &Stats,
+    last_seen: &AtomicU64,
+    sock: &UdpSocket,
+    buf: &[u8],
+    len: usize,
+    dest: SocketAddr,
+) {
+    if max_payload != 0 && len > max_payload {
+        eprintln!("dropping packet: {} bytes exceeds max {}", len, max_payload);
+        if c2u {
+            stats.drop_c2u_oversize();
+        } else {
+            stats.drop_u2c_oversize();
+        }
+    } else if let Err(e) = sock.send_to(&buf[..len], dest) {
+        eprintln!("send_to {} error: {}", dest, e);
+        if c2u {
+            stats.c2u_err();
+        } else {
+            stats.u2c_err();
+        }
+    } else {
+        let t_send = Instant::now();
+        last_seen.store(Stats::dur_ns(t_start, t_send), AtomOrdering::Relaxed);
+        if c2u {
+            stats.add_c2u(len as u64, t_recv, t_send);
+        } else {
+            stats.add_u2c(len as u64, t_recv, t_send);
+        }
+    }
+}
 
 pub fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
     let mut iter = addr.to_socket_addrs()?;

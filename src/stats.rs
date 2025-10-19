@@ -35,7 +35,7 @@ impl Stats {
         })
     }
 
-    fn dur_ns(start: Instant, end: Instant) -> u64 {
+    pub fn dur_ns(start: Instant, end: Instant) -> u64 {
         let d = end.duration_since(start);
         d.as_nanos().min(u128::from(u64::MAX)) as u64
     }
