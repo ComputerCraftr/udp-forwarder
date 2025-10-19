@@ -10,7 +10,11 @@ pub fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
 
 pub fn make_udp_socket(bind_addr: SocketAddr, read_timeout_ms: u64) -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(bind_addr)?;
-    sock.set_read_timeout(Some(Duration::from_millis(read_timeout_ms)))?;
+    if read_timeout_ms == 0 {
+        sock.set_read_timeout(None)?; // block forever
+    } else {
+        sock.set_read_timeout(Some(Duration::from_millis(read_timeout_ms)))?;
+    }
     Ok(sock)
 }
 
@@ -19,7 +23,7 @@ pub fn make_upstream_socket_for(dest: SocketAddr) -> io::Result<UdpSocket> {
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     };
-    make_udp_socket(bind_addr, 250)
+    make_udp_socket(bind_addr, 5000)
 }
 
 pub fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {

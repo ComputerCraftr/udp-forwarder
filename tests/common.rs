@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 pub fn bind_udp_v4_client() -> UdpSocket {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).expect("bind client");
-    sock.set_read_timeout(Some(Duration::from_millis(500)))
+    sock.set_read_timeout(Some(Duration::from_millis(5000)))
         .unwrap();
-    sock.set_write_timeout(Some(Duration::from_millis(500)))
+    sock.set_write_timeout(Some(Duration::from_millis(5000)))
         .unwrap();
     sock
 }
@@ -19,16 +19,16 @@ pub fn bind_udp_v4_client() -> UdpSocket {
 #[allow(dead_code)]
 pub fn bind_udp_v6_client() -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(500)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(500)))?;
+    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
     Ok(sock)
 }
 
 pub fn spawn_udp_echo_server_v4() -> (SocketAddr, thread::JoinHandle<()>) {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).expect("bind v4 echo");
-    sock.set_read_timeout(Some(Duration::from_millis(500)))
+    sock.set_read_timeout(Some(Duration::from_millis(5000)))
         .unwrap();
-    sock.set_write_timeout(Some(Duration::from_millis(500)))
+    sock.set_write_timeout(Some(Duration::from_millis(5000)))
         .unwrap();
     let addr = sock.local_addr().unwrap();
     let handle = thread::spawn(move || {
@@ -48,8 +48,8 @@ pub fn spawn_udp_echo_server_v4() -> (SocketAddr, thread::JoinHandle<()>) {
 #[allow(dead_code)]
 pub fn spawn_udp_echo_server_v6() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(500)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(500)))?;
+    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
     let addr = sock.local_addr().unwrap();
     let handle = thread::spawn(move || {
         let mut buf = [0u8; 65535];

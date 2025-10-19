@@ -39,7 +39,7 @@ fn enforce_max_payload_ipv4() {
     let over = vec![0u8; 549];
     client.send_to(&over, listen_addr).unwrap();
     client
-        .set_read_timeout(Some(Duration::from_millis(200)))
+        .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();
     let drop_expected = client.recv_from(&mut buf).is_err();
     assert!(drop_expected, "oversize v4 payload should be dropped");
@@ -110,7 +110,7 @@ fn enforce_max_payload_ipv6() {
     let over = vec![0u8; 1233];
     client.send_to(&over, listen_addr).unwrap();
     client
-        .set_read_timeout(Some(Duration::from_millis(200)))
+        .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();
     let drop_expected = client.recv_from(&mut buf).is_err();
     assert!(drop_expected, "oversize v6 payload should be dropped");
