@@ -101,8 +101,8 @@ impl Stats {
                 c2u_lat_max: u64,
                 u2c_lat_sum: u64,
                 u2c_lat_max: u64,
-                drops_c2u_oversize: u64,
-                drops_u2c_oversize: u64,
+                c2u_drops_oversize: u64,
+                u2c_drops_oversize: u64,
             }
 
             let mut agg = Agg {
@@ -118,8 +118,8 @@ impl Stats {
                 c2u_lat_max: 0,
                 u2c_lat_sum: 0,
                 u2c_lat_max: 0,
-                drops_c2u_oversize: 0,
-                drops_u2c_oversize: 0,
+                c2u_drops_oversize: 0,
+                u2c_drops_oversize: 0,
             };
 
             // --- DRY helpers ---------------------------------------------------
@@ -154,10 +154,10 @@ impl Stats {
                     a.u2c_errs = a.u2c_errs.saturating_add(1);
                 }
                 StatEvent::DropC2UOver => {
-                    a.drops_c2u_oversize = a.drops_c2u_oversize.saturating_add(1);
+                    a.c2u_drops_oversize = a.c2u_drops_oversize.saturating_add(1);
                 }
                 StatEvent::DropU2COver => {
-                    a.drops_u2c_oversize = a.drops_u2c_oversize.saturating_add(1);
+                    a.u2c_drops_oversize = a.u2c_drops_oversize.saturating_add(1);
                 }
             };
 
@@ -172,42 +172,42 @@ impl Stats {
             // Print a single JSON snapshot using current aggregates
             let print_snapshot = |a: &Agg| {
                 let uptime = Self::uptime_seconds(&stats).unwrap_or(0);
-                let c2u_avg_us = if a.c2u_pkts > 0 {
+                let c2u_us_avg = if a.c2u_pkts > 0 {
                     (a.c2u_lat_sum / a.c2u_pkts) / 1000
                 } else {
                     0
                 };
-                let u2c_avg_us = if a.u2c_pkts > 0 {
+                let u2c_us_avg = if a.u2c_pkts > 0 {
                     (a.u2c_lat_sum / a.u2c_pkts) / 1000
                 } else {
                     0
                 };
-                let c2u_max_us = a.c2u_lat_max / 1000;
-                let u2c_max_us = a.u2c_lat_max / 1000;
+                let c2u_us_max = a.c2u_lat_max / 1000;
+                let u2c_us_max = a.u2c_lat_max / 1000;
                 let client_opt = { *client_peer.lock().unwrap() };
-                let locked_now = client_opt.is_some();
-                let client_s = client_opt
+                let locked = client_opt.is_some();
+                let client_addr = client_opt
                     .map(|x| x.to_string())
                     .unwrap_or_else(|| "null".to_string());
-                let up_s = { upstream_mgr.current_dest().to_string() };
+                let upstream_addr = { upstream_mgr.current_dest().to_string() };
                 let line = json!({
                     "uptime_s": uptime,
-                    "locked": locked_now,
-                    "client": client_s,
-                    "upstream": up_s,
+                    "locked": locked,
+                    "client_addr": client_addr,
+                    "upstream_addr": upstream_addr,
                     "c2u_pkts": a.c2u_pkts,
                     "c2u_bytes": a.c2u_bytes,
                     "c2u_bytes_max": a.c2u_bytes_max,
-                    "c2u_drops_oversize": a.drops_c2u_oversize,
-                    "c2u_us_avg": c2u_avg_us,
-                    "c2u_us_max": c2u_max_us,
+                    "c2u_drops_oversize": a.c2u_drops_oversize,
+                    "c2u_us_avg": c2u_us_avg,
+                    "c2u_us_max": c2u_us_max,
                     "c2u_errs": a.c2u_errs,
                     "u2c_pkts": a.u2c_pkts,
                     "u2c_bytes": a.u2c_bytes,
                     "u2c_bytes_max": a.u2c_bytes_max,
-                    "u2c_drops_oversize": a.drops_u2c_oversize,
-                    "u2c_us_avg": u2c_avg_us,
-                    "u2c_us_max": u2c_max_us,
+                    "u2c_drops_oversize": a.u2c_drops_oversize,
+                    "u2c_us_avg": u2c_us_avg,
+                    "u2c_us_max": u2c_us_max,
                     "u2c_errs": a.u2c_errs,
                 });
                 safe_println(&line.to_string());

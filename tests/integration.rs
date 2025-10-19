@@ -197,14 +197,14 @@ fn single_client_forwarding_ipv4() {
     assert!(stats["locked"].as_bool().unwrap_or(false));
     assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), 1);
     assert_eq!(stats["u2c_pkts"].as_u64().unwrap_or(0), 1);
-    assert!(stats["client"].is_string());
-    assert!(stats["upstream"].is_string());
+    assert!(stats["client_addr"].is_string());
+    assert!(stats["upstream_addr"].is_string());
 
     // Validate addresses exactly (listen is random port, but client local addr is known)
-    let stats_client = json_addr(&stats["client"]);
-    assert_eq!(stats_client, client_local, "stats client addr mismatch");
-    let stats_upstream = json_addr(&stats["upstream"]);
-    assert_eq!(stats_upstream, up_addr, "stats upstream addr mismatch");
+    let stats_client = json_addr(&stats["client_addr"]);
+    assert_eq!(stats_client, client_local, "stats client_addr mismatch");
+    let stats_upstream = json_addr(&stats["upstream_addr"]);
+    assert_eq!(stats_upstream, up_addr, "stats upstream_addr mismatch");
 
     // Validate byte counters for one packet
     assert_eq!(
@@ -300,13 +300,13 @@ fn single_client_forwarding_ipv6() {
     assert!(stats["locked"].as_bool().unwrap_or(false));
     assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), 1);
     assert_eq!(stats["u2c_pkts"].as_u64().unwrap_or(0), 1);
-    assert!(stats["client"].is_string());
-    assert!(stats["upstream"].is_string());
+    assert!(stats["client_addr"].is_string());
+    assert!(stats["upstream_addr"].is_string());
 
-    let stats_client = json_addr(&stats["client"]);
-    assert_eq!(stats_client, client_local, "stats client addr v6 mismatch");
-    let stats_upstream = json_addr(&stats["upstream"]);
-    assert_eq!(stats_upstream, up_addr, "stats upstream addr v6 mismatch");
+    let stats_client = json_addr(&stats["client_addr"]);
+    assert_eq!(stats_client, client_local, "stats client_addr v6 mismatch");
+    let stats_upstream = json_addr(&stats["upstream_addr"]);
+    assert_eq!(stats_upstream, up_addr, "stats upstream_addr v6 mismatch");
     assert_eq!(
         stats["c2u_bytes"].as_u64().unwrap_or(0),
         payload.len() as u64
