@@ -26,25 +26,29 @@ fn enforce_max_payload_ipv4() {
         .spawn()
         .expect("spawn forwarder");
 
+    // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child);
     let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
+    client
+        .connect(listen_addr)
+        .expect("connect to forwarder (IPv4)");
 
-    // exactly safe payload (548) should pass
+    // Exactly-safe payload should be echoed
     let ok = vec![0u8; 548];
-    client.send_to(&ok, listen_addr).unwrap();
+    client.send(&ok).unwrap();
     let mut buf = [0u8; 2048];
-    let (_n, _src) = client.recv_from(&mut buf).expect("recv ok v4");
+    let _n = client.recv(&mut buf).expect("recv from forwarder (IPv4)");
 
-    // one byte over should be dropped (no echo)
+    // One byte over should be dropped (no echo)
     let over = vec![0u8; 549];
-    client.send_to(&over, listen_addr).unwrap();
+    client.send(&over).unwrap();
     client
         .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();
-    let drop_expected = client.recv_from(&mut buf).is_err();
-    assert!(drop_expected, "oversize v4 payload should be dropped");
+    let drop_expected = client.recv(&mut buf).is_err();
+    assert!(drop_expected, "oversize payload should be dropped");
 
-    // after ~2s of idle it should exit; give it a moment
+    // After ~2s of idle it should exit; give it a moment
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
         match child.try_wait() {
@@ -69,14 +73,14 @@ fn enforce_max_payload_ipv6() {
     let client = match bind_udp_v6_client() {
         Ok(s) => s,
         Err(_) => {
-            eprintln!("no v6; skip");
+            eprintln!("IPv6 loopback not available; skipping IPv6 test");
             return;
         }
     };
     let (up_addr, _up) = match spawn_udp_echo_server_v6() {
         Ok(t) => t,
         Err(_) => {
-            eprintln!("no v6; skip");
+            eprintln!("IPv6 echo server could not bind; skipping IPv6 test");
             return;
         }
     };
@@ -97,25 +101,29 @@ fn enforce_max_payload_ipv6() {
         .spawn()
         .expect("spawn forwarder");
 
+    // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child);
     let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
+    client
+        .connect(listen_addr)
+        .expect("connect to forwarder (IPv6)");
 
-    // exactly safe payload (1232) should pass
+    // Exactly-safe payload should be echoed
     let ok = vec![0u8; 1232];
-    client.send_to(&ok, listen_addr).unwrap();
+    client.send(&ok).unwrap();
     let mut buf = [0u8; 4096];
-    let (_n, _src) = client.recv_from(&mut buf).expect("recv ok v6");
+    let _n = client.recv(&mut buf).expect("recv from forwarder (IPv6)");
 
-    // one byte over should be dropped
+    // One byte over should be dropped (no echo)
     let over = vec![0u8; 1233];
-    client.send_to(&over, listen_addr).unwrap();
+    client.send(&over).unwrap();
     client
         .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();
-    let drop_expected = client.recv_from(&mut buf).is_err();
-    assert!(drop_expected, "oversize v6 payload should be dropped");
+    let drop_expected = client.recv(&mut buf).is_err();
+    assert!(drop_expected, "oversize payload should be dropped");
 
-    // after ~2s of idle it should exit; give it a moment
+    // After ~2s of idle it should exit; give it a moment
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
         match child.try_wait() {
@@ -163,20 +171,23 @@ fn single_client_forwarding_ipv4() {
 
     let mut out = take_child_stdout(&mut child);
     let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
-
-    // send one datagram to the forwarder; expect to receive same payload back (echo through upstream)
-    let payload = b"hello-through-forwarder";
     client_sock
-        .send_to(payload, listen_addr)
-        .expect("send to forwarder");
+        .connect(listen_addr)
+        .expect("connect to forwarder (IPv4)");
 
-    let mut buf = [0u8; 1024];
-    let (n, _src) = client_sock
-        .recv_from(&mut buf)
-        .expect("recv from forwarder");
-    assert_eq!(&buf[..n], payload, "echo payload mismatch");
+    // Send multiple datagrams and expect the same payloads back (echo via upstream)
+    let count = 5;
+    let payload = b"hello-through-forwarder";
+    for _ in 0..count {
+        client_sock.send(payload).expect("send to forwarder (IPv4)");
+        let mut buf = [0u8; 1024];
+        let n = client_sock
+            .recv(&mut buf)
+            .expect("recv from forwarder (IPv4)");
+        assert_eq!(&buf[..n], payload, "echo payload mismatch");
+    }
 
-    // after ~2s of idle it should exit; give it a moment
+    // After ~2s of idle it should exit; give it a moment
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
         match child.try_wait() {
@@ -191,29 +202,29 @@ fn single_client_forwarding_ipv4() {
     // if it didn't exit, kill for cleanliness
     let _ = child.kill();
 
-    // Wait for a stats line and validate fields
+    // Validate stats snapshot fields
     let stats = wait_for_stats_json_from(&mut out, Duration::from_secs(2));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
-    assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), 1);
-    assert_eq!(stats["u2c_pkts"].as_u64().unwrap_or(0), 1);
+    assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), count);
+    assert_eq!(stats["u2c_pkts"].as_u64().unwrap_or(0), count);
     assert!(stats["client_addr"].is_string());
     assert!(stats["upstream_addr"].is_string());
 
-    // Validate addresses exactly (listen is random port, but client local addr is known)
+    // Validate exact addresses (client local addr and upstream addr)
     let stats_client = json_addr(&stats["client_addr"]);
     assert_eq!(stats_client, client_local, "stats client_addr mismatch");
     let stats_upstream = json_addr(&stats["upstream_addr"]);
     assert_eq!(stats_upstream, up_addr, "stats upstream_addr mismatch");
 
-    // Validate byte counters for one packet
+    // Validate byte counters for multiple packets
     assert_eq!(
         stats["c2u_bytes"].as_u64().unwrap_or(0),
-        payload.len() as u64
+        payload.len() as u64 * count
     );
     assert_eq!(
         stats["u2c_bytes"].as_u64().unwrap_or(0),
-        payload.len() as u64
+        payload.len() as u64 * count
     );
     assert_eq!(
         stats["c2u_bytes_max"].as_u64().unwrap_or(0),
@@ -224,7 +235,7 @@ fn single_client_forwarding_ipv4() {
         payload.len() as u64
     );
 
-    // Latency fields should be numbers (≥ 0)
+    // Latency fields should be numeric
     assert!(stats["c2u_us_avg"].is_number());
     assert!(stats["u2c_us_avg"].is_number());
     assert!(stats["c2u_us_max"].is_number());
@@ -245,7 +256,7 @@ fn single_client_forwarding_ipv6() {
     let (up_addr, _up_thread) = match spawn_udp_echo_server_v6() {
         Ok(t) => t,
         Err(_) => {
-            eprintln!("IPv6 echo server could not bind; skipping");
+            eprintln!("IPv6 echo server could not bind; skipping IPv6 test");
             return;
         }
     };
@@ -267,19 +278,23 @@ fn single_client_forwarding_ipv6() {
 
     let mut out = take_child_stdout(&mut child);
     let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
-
-    let payload = b"hello-through-forwarder-v6";
     client_sock
-        .send_to(payload, listen_addr)
-        .expect("send v6 to forwarder");
+        .connect(listen_addr)
+        .expect("connect to forwarder (IPv6)");
 
-    let mut buf = [0u8; 1024];
-    let (n, _src) = client_sock
-        .recv_from(&mut buf)
-        .expect("recv v6 from forwarder");
-    assert_eq!(&buf[..n], payload, "echo v6 payload mismatch");
+    // Send multiple datagrams and expect the same payloads back (echo via upstream)
+    let count = 5;
+    let payload = b"hello-through-forwarder-v6";
+    for _ in 0..count {
+        client_sock.send(payload).expect("send to forwarder (IPv6)");
+        let mut buf = [0u8; 1024];
+        let n = client_sock
+            .recv(&mut buf)
+            .expect("recv from forwarder (IPv6)");
+        assert_eq!(&buf[..n], payload, "echo v6 payload mismatch");
+    }
 
-    // after ~2s of idle it should exit; give it a moment
+    // After ~2s of idle it should exit; give it a moment
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
         match child.try_wait() {
@@ -294,26 +309,27 @@ fn single_client_forwarding_ipv6() {
     // if it didn't exit, kill for cleanliness
     let _ = child.kill();
 
-    // stats line
+    // Validate stats snapshot fields
     let stats = wait_for_stats_json_from(&mut out, Duration::from_secs(2));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
-    assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), 1);
-    assert_eq!(stats["u2c_pkts"].as_u64().unwrap_or(0), 1);
+    assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), count);
+    assert_eq!(stats["u2c_pkts"].as_u64().unwrap_or(0), count);
     assert!(stats["client_addr"].is_string());
     assert!(stats["upstream_addr"].is_string());
 
+    // Validate exact addresses (client local addr and upstream addr)
     let stats_client = json_addr(&stats["client_addr"]);
     assert_eq!(stats_client, client_local, "stats client_addr v6 mismatch");
     let stats_upstream = json_addr(&stats["upstream_addr"]);
     assert_eq!(stats_upstream, up_addr, "stats upstream_addr v6 mismatch");
     assert_eq!(
         stats["c2u_bytes"].as_u64().unwrap_or(0),
-        payload.len() as u64
+        payload.len() as u64 * count
     );
     assert_eq!(
         stats["u2c_bytes"].as_u64().unwrap_or(0),
-        payload.len() as u64
+        payload.len() as u64 * count
     );
     assert_eq!(
         stats["c2u_bytes_max"].as_u64().unwrap_or(0),
@@ -323,6 +339,7 @@ fn single_client_forwarding_ipv6() {
         stats["u2c_bytes_max"].as_u64().unwrap_or(0),
         payload.len() as u64
     );
+    // Latency fields should be numeric
     assert!(stats["c2u_us_avg"].is_number());
     assert!(stats["u2c_us_avg"].is_number());
     assert!(stats["c2u_us_max"].is_number());
