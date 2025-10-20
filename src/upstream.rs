@@ -29,35 +29,58 @@ impl UpstreamManager {
     }
 
     /// Re-resolve a target string and update: swap socket if family flips.
-    pub fn apply_fresh(&self, target: &str, context: &str) {
-        if let Ok(fresh) = resolve_first(target) {
+    pub fn apply_fresh(
+        &self,
+        target: &str,
+        context: &str,
+    ) -> io::Result<(std::net::UdpSocket, SocketAddr, u64)> {
+        let fresh = resolve_first(target)?;
+
+        // Compare against previous before updating to compute correct family flip
+        let (fam_flip, changed) = {
             let mut cur = self.current_addr.lock().unwrap();
-            let fam_flip = family_changed(*cur, fresh);
-            let changed = *cur != fresh;
-            *cur = fresh;
-            drop(cur);
+            let prev = *cur;
+            let changed = prev != fresh;
+            let fam_flip = if changed {
+                *cur = fresh;
+                family_changed(prev, fresh)
+            } else {
+                false
+            };
+            (fam_flip, changed)
+        };
 
-            if fam_flip {
-                match make_upstream_socket_for(fresh) {
-                    Ok(new_sock) => {
-                        *self.sock.lock().unwrap() = new_sock;
-                        println!(
-                            "{context}: upstream {fresh} (family changed; upstream socket swapped)"
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("{context}: failed to create upstream socket for {fresh}: {e}")
-                    }
-                }
-            } else if changed {
-                println!("{context}: upstream {fresh}");
+        // Prepare a socket to return while also updating the internal socket state.
+        let ret_sock = if fam_flip {
+            println!("{context}: upstream {fresh} (family changed; upstream socket swapped)");
+            // Family changed: create a new **connected** upstream socket and swap it in.
+            let new_sock = make_upstream_socket_for(fresh)?; // already connected
+            {
+                let mut guard = self.sock.lock().unwrap();
+                *guard = new_sock.try_clone()?;
             }
+            new_sock
+        } else if changed {
+            println!("{context}: upstream {fresh}");
+            // Same family, different address: reconnect existing socket in place.
+            let guard = self.sock.lock().unwrap();
+            guard.connect(fresh)?;
+            // Return a clone of the now-updated internal socket
+            guard.try_clone()?
+        } else {
+            // No change: just return a clone of the current socket
+            self.sock.lock().unwrap().try_clone()?
+        };
 
-            if fam_flip || changed {
-                // publish that upstream changed; readers can refresh lazily
-                self.version.fetch_add(1, AtomOrdering::Relaxed);
-            }
-        }
+        let ver = if fam_flip || changed {
+            // publish that upstream changed; readers can refresh lazily
+            self.version.fetch_add(1, AtomOrdering::Relaxed) + 1
+        } else {
+            self.version.load(AtomOrdering::Relaxed)
+        };
+
+        // Return up-to-date handles to the caller without re-locking other getters
+        Ok((ret_sock, fresh, ver))
     }
 
     /// Optional periodic re-resolve while locked.
@@ -78,7 +101,7 @@ impl UpstreamManager {
                 if !locked.load(AtomOrdering::Relaxed) {
                     continue;
                 }
-                mgr.apply_fresh(&target, "Periodic re-resolve");
+                let _ = mgr.apply_fresh(&target, "Periodic re-resolve");
             }
         });
     }

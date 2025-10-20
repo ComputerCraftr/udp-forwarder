@@ -99,14 +99,14 @@ fn stress_one_minute_ipv4() {
 
     // Sanity: the forwarder should have seen at least some of what we sent/received.
     assert!(
-        c2u_pkts >= sent / 2,
+        c2u_pkts >= sent * 3 / 4,
         "c2u_pkts too low: {} vs sent ~{}\n{}",
         c2u_pkts,
         sent,
         stats.to_string()
     );
     assert!(
-        u2c_pkts >= rcvd / 2,
+        u2c_pkts >= rcvd * 3 / 4,
         "u2c_pkts too low: {} vs got ~{}\n{}",
         u2c_pkts,
         rcvd,

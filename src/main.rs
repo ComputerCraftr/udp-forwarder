@@ -28,9 +28,9 @@ fn main() -> io::Result<()> {
     let client_sock = make_udp_socket(cfg.listen_addr, 5000)?;
 
     // Single-client state
-    let client_peer: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
+    let client_peer = Arc::new(Mutex::new(None));
     let locked = Arc::new(AtomicBool::new(false));
-    let last_seen_ns: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let last_seen_ns = Arc::new(AtomicU64::new(0));
 
     let stats = Stats::new();
     let should_exit = Arc::new(AtomicBool::new(false));
@@ -60,47 +60,94 @@ fn main() -> io::Result<()> {
             let mut buf = vec![0u8; 65535];
             // Cache upstream socket and destination; refresh only when version changes
             let (mut up_sock, mut dest, mut ver) = upstream_mgr_a.refresh_handles();
-            // Local cache of the currently locked client to avoid per-packet locking
-            let mut local_client: Option<SocketAddr> = None;
+            // Once locked, connect client socket to the peer and switch to recv()
+            let mut local_unconnected_client: Option<SocketAddr> = Some(cfg.listen_addr);
             loop {
                 // Cheap hot-path check: only refresh when manager version changes
                 if ver != upstream_mgr_a.version() {
                     (up_sock, dest, ver) = upstream_mgr_a.refresh_handles();
                 }
-                match client_sock_a.recv_from(&mut buf) {
-                    Ok((len, src)) => {
-                        let t_recv = Instant::now();
-                        // If we're not globally locked, clear local cache and lock to this src once
-                        if !locked_a.load(AtomOrdering::Relaxed) {
-                            local_client = Some(src);
-                            *client_peer_a.lock().unwrap() = Some(src);
-                            locked_a.store(true, AtomOrdering::Relaxed);
-                            println!("Locked to single client {}", src);
-                            upstream_mgr_a.apply_fresh(&upstream_target_a, "Re-resolved");
+                if local_unconnected_client.is_none() {
+                    // Connected fast path: only packets from the locked client are delivered
+                    match client_sock_a.recv(&mut buf) {
+                        Ok(len) => {
+                            let t_recv = Instant::now();
+                            if locked_a.load(AtomOrdering::Relaxed) {
+                                send_payload(
+                                    true,
+                                    true,
+                                    t_start,
+                                    t_recv,
+                                    cfg.max_payload,
+                                    &stats_a,
+                                    &last_seen_a,
+                                    &up_sock,
+                                    &buf,
+                                    len,
+                                    dest,
+                                );
+                            } else {
+                                local_unconnected_client = Some(cfg.listen_addr);
+                            }
                         }
-
-                        // Forward if we have a local locked client matching this src
-                        if Some(src) == local_client {
-                            send_payload(
-                                true,
-                                t_start,
-                                t_recv,
-                                cfg.max_payload,
-                                &stats_a,
-                                &last_seen_a,
-                                &up_sock,
-                                &buf,
-                                len,
-                                dest,
-                            );
+                        Err(ref e)
+                            if e.kind() == io::ErrorKind::WouldBlock
+                                || e.kind() == io::ErrorKind::TimedOut => {}
+                        Err(e) => {
+                            eprintln!("recv client (connected) error: {}", e);
+                            thread::sleep(Duration::from_millis(10));
                         }
                     }
-                    Err(ref e)
-                        if e.kind() == io::ErrorKind::WouldBlock
-                            || e.kind() == io::ErrorKind::TimedOut => {}
-                    Err(e) => {
-                        eprintln!("recv_from client error: {}", e);
-                        thread::sleep(Duration::from_millis(10));
+                } else {
+                    match client_sock_a.recv_from(&mut buf) {
+                        Ok((len, src)) => {
+                            let t_recv = Instant::now();
+                            // First lock: publish client and connect the socket for fast path
+                            if !locked_a.load(AtomOrdering::Relaxed) {
+                                local_unconnected_client = Some(src);
+                                *client_peer_a.lock().unwrap() = Some(src);
+                                locked_a.store(true, AtomOrdering::Relaxed);
+                                if let Err(e) = client_sock_a.connect(src) {
+                                    eprintln!("connect client_sock to {} failed: {}", src, e);
+                                } else {
+                                    local_unconnected_client = None;
+                                    println!("Locked to single client {} (connected)", src);
+                                }
+                                if let Ok((new_sock, new_dest, new_ver)) =
+                                    upstream_mgr_a.apply_fresh(&upstream_target_a, "Re-resolved")
+                                {
+                                    up_sock = new_sock;
+                                    dest = new_dest;
+                                    ver = new_ver;
+                                }
+                            }
+
+                            // Only forward packets from the locked client (recv_from may still deliver before connect succeeds)
+                            if Some(src) == local_unconnected_client
+                                || local_unconnected_client.is_none()
+                            {
+                                send_payload(
+                                    true,
+                                    local_unconnected_client.is_none(),
+                                    t_start,
+                                    t_recv,
+                                    cfg.max_payload,
+                                    &stats_a,
+                                    &last_seen_a,
+                                    &up_sock,
+                                    &buf,
+                                    len,
+                                    dest,
+                                );
+                            }
+                        }
+                        Err(ref e)
+                            if e.kind() == io::ErrorKind::WouldBlock
+                                || e.kind() == io::ErrorKind::TimedOut => {}
+                        Err(e) => {
+                            eprintln!("recv_from client error: {}", e);
+                            thread::sleep(Duration::from_millis(10));
+                        }
                     }
                 }
             }
@@ -127,15 +174,20 @@ fn main() -> io::Result<()> {
                 if ver != upstream_mgr_b.version() {
                     (up_sock, _, ver) = upstream_mgr_b.refresh_handles();
                 }
-                match up_sock.recv_from(&mut buf) {
-                    Ok((len, _src)) => {
+                match up_sock.recv(&mut buf) {
+                    Ok(len) => {
                         let t_recv = Instant::now();
                         // Refresh local cached destination when global lock state changes
                         if !locked_b.load(AtomOrdering::Relaxed) {
                             local_dest = None;
-                        } else if let Some(dest) = local_dest {
+                        } else if let Some(dest) = local_dest.or_else(|| {
+                            let v = *client_peer_b.lock().unwrap();
+                            local_dest = v;
+                            v
+                        }) {
                             send_payload(
                                 false,
+                                true,
                                 t_start,
                                 t_recv,
                                 cfg.max_payload,
@@ -146,29 +198,13 @@ fn main() -> io::Result<()> {
                                 len,
                                 dest,
                             );
-                        } else {
-                            local_dest = *client_peer_b.lock().unwrap();
-                            if let Some(dest) = local_dest {
-                                send_payload(
-                                    false,
-                                    t_start,
-                                    t_recv,
-                                    cfg.max_payload,
-                                    &stats_b,
-                                    &last_seen_b,
-                                    &client_sock_b,
-                                    &buf,
-                                    len,
-                                    dest,
-                                );
-                            }
                         }
                     }
                     Err(ref e)
                         if e.kind() == io::ErrorKind::WouldBlock
                             || e.kind() == io::ErrorKind::TimedOut => {}
                     Err(e) => {
-                        eprintln!("recv_from upstream error: {}", e);
+                        eprintln!("recv upstream (connected) error: {}", e);
                         thread::sleep(Duration::from_millis(10));
                     }
                 }

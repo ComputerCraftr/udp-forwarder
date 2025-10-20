@@ -8,6 +8,7 @@ use crate::stats::Stats;
 #[inline]
 pub fn send_payload(
     c2u: bool,
+    connected: bool,
     t_start: Instant,
     t_recv: Instant,
     max_payload: usize,
@@ -18,28 +19,49 @@ pub fn send_payload(
     len: usize,
     dest: SocketAddr,
 ) {
-    if max_payload != 0 && len > max_payload {
-        eprintln!("dropping packet: {} bytes exceeds max {}", len, max_payload);
+    let stats_drop_oversize = |c2u, stats: &Stats| {
         if c2u {
             stats.drop_c2u_oversize();
         } else {
             stats.drop_u2c_oversize();
         }
-    } else if let Err(e) = sock.send_to(&buf[..len], dest) {
-        eprintln!("send_to {} error: {}", dest, e);
+    };
+
+    let stats_err = |c2u, stats: &Stats| {
         if c2u {
             stats.c2u_err();
         } else {
             stats.u2c_err();
         }
-    } else {
-        let t_send = Instant::now();
-        last_seen.store(Stats::dur_ns(t_start, t_send), AtomOrdering::Relaxed);
+    };
+
+    let payload_send =
+        |connected: bool, sock: &UdpSocket, buf: &[u8], len: usize, dest: SocketAddr| {
+            if connected {
+                return sock.send(&buf[..len]);
+            } else {
+                return sock.send_to(&buf[..len], dest);
+            }
+        };
+
+    let stats_add = |c2u, stats: &Stats, len: usize, t_recv: Instant, t_send: Instant| {
         if c2u {
             stats.add_c2u(len as u64, t_recv, t_send);
         } else {
             stats.add_u2c(len as u64, t_recv, t_send);
         }
+    };
+
+    if max_payload != 0 && len > max_payload {
+        eprintln!("dropping packet: {} bytes exceeds max {}", len, max_payload);
+        stats_drop_oversize(c2u, stats);
+    } else if let Err(e) = payload_send(connected, sock, buf, len, dest) {
+        eprintln!("send {} error: {}", dest, e);
+        stats_err(c2u, stats);
+    } else {
+        let t_send = Instant::now();
+        last_seen.store(Stats::dur_ns(t_start, t_send), AtomOrdering::Relaxed);
+        stats_add(c2u, stats, len, t_recv, t_send);
     }
 }
 
@@ -64,7 +86,10 @@ pub fn make_upstream_socket_for(dest: SocketAddr) -> io::Result<UdpSocket> {
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     };
-    make_udp_socket(bind_addr, 5000)
+
+    let sock = make_udp_socket(bind_addr, 5000)?;
+    sock.connect(dest)?;
+    Ok(sock)
 }
 
 pub fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {
