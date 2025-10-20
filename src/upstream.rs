@@ -1,6 +1,6 @@
 use crate::net::{family_changed, make_upstream_socket_for, resolve_first};
 use std::io;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -8,9 +8,9 @@ use std::time::Duration;
 
 /// Manages current upstream destination and a hot-swappable UdpSocket.
 pub struct UpstreamManager {
-    current_addr: Arc<Mutex<SocketAddr>>,  // cold-path updates only
-    sock: Arc<Mutex<std::net::UdpSocket>>, // cold-path replacement only
-    version: AtomicU64,                    // increments on any change
+    current_addr: Arc<Mutex<SocketAddr>>, // cold-path updates only
+    sock: Arc<Mutex<UdpSocket>>,          // cold-path replacement only
+    version: AtomicU64,                   // increments on any change
 }
 
 impl UpstreamManager {
@@ -33,7 +33,7 @@ impl UpstreamManager {
         &self,
         target: &str,
         context: &str,
-    ) -> io::Result<(std::net::UdpSocket, SocketAddr, u64)> {
+    ) -> io::Result<(UdpSocket, SocketAddr, u64)> {
         let fresh = resolve_first(target)?;
 
         // Compare against previous before updating to compute correct family flip
@@ -114,7 +114,7 @@ impl UpstreamManager {
 
     /// Clone current socket and read current dest (cold path under mutexes).
     /// Use this only when your cached version != `version()`.
-    pub fn refresh_handles(&self) -> (std::net::UdpSocket, SocketAddr, u64) {
+    pub fn refresh_handles(&self) -> (UdpSocket, SocketAddr, u64) {
         // lock order: sock then addr (stable and short-lived)
         let sock = Self::clone_socket(self);
         let dest = Self::current_dest(self);
@@ -123,7 +123,7 @@ impl UpstreamManager {
     }
 
     /// Back-compat: clone the socket only (cold path). Prefer `refresh_handles`.
-    pub fn clone_socket(&self) -> std::net::UdpSocket {
+    pub fn clone_socket(&self) -> UdpSocket {
         self.sock
             .lock()
             .unwrap()

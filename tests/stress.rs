@@ -41,7 +41,7 @@ fn stress_one_minute_ipv4() {
         .expect("connect to forwarder (IPv4)");
 
     // Load gen for 60 seconds
-    let payload = vec![0u8; 200];
+    let payload = vec![0u8; 1200];
     client_sock
         .send(&payload)
         .expect("send to forwarder (IPv4)"); // lock to this client
