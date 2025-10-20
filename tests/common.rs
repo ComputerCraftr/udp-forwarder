@@ -4,8 +4,49 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::net::{
     Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs, UdpSocket,
 };
+use std::ops::{Deref, DerefMut};
+use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Ensures the spawned child is terminated on drop (e.g., when a test panics).
+#[allow(dead_code)]
+pub struct ChildGuard(Child);
+
+impl ChildGuard {
+    #[allow(dead_code)]
+    pub fn new(child: Child) -> Self {
+        Self(child)
+    }
+}
+
+impl Deref for ChildGuard {
+    type Target = Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        // If it's still running (or we can't tell), try to kill and wait.
+        match self.0.try_wait() {
+            Ok(Some(_status)) => {
+                // already exited
+            }
+            Ok(None) | Err(_) => {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+}
 
 pub fn bind_udp_v4_client() -> UdpSocket {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).expect("bind client");

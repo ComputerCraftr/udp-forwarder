@@ -10,21 +10,23 @@ fn enforce_max_payload_ipv4() {
     let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
     let client = bind_udp_v4_client();
     let bin = find_forwarder_bin();
-    let mut child = Command::new(bin)
-        .arg("127.0.0.1:0")
-        .arg(up_addr.to_string())
-        .arg("--timeout-secs")
-        .arg("1")
-        .arg("--on-timeout")
-        .arg("exit")
-        .arg("--stats-interval-mins")
-        .arg("0")
-        .arg("--max-payload")
-        .arg("548")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn forwarder");
+    let mut child = ChildGuard::new(
+        Command::new(bin)
+            .arg("127.0.0.1:0")
+            .arg(up_addr.to_string())
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg("--on-timeout")
+            .arg("exit")
+            .arg("--stats-interval-mins")
+            .arg("0")
+            .arg("--max-payload")
+            .arg("548")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn forwarder"),
+    );
 
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child);
@@ -85,21 +87,23 @@ fn enforce_max_payload_ipv6() {
         }
     };
     let bin = find_forwarder_bin();
-    let mut child = Command::new(bin)
-        .arg("[::1]:0")
-        .arg(up_addr.to_string())
-        .arg("--timeout-secs")
-        .arg("1")
-        .arg("--on-timeout")
-        .arg("exit")
-        .arg("--stats-interval-mins")
-        .arg("0")
-        .arg("--max-payload")
-        .arg("1232")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn forwarder");
+    let mut child = ChildGuard::new(
+        Command::new(bin)
+            .arg("[::1]:0")
+            .arg(up_addr.to_string())
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg("--on-timeout")
+            .arg("exit")
+            .arg("--stats-interval-mins")
+            .arg("0")
+            .arg("--max-payload")
+            .arg("1232")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn forwarder"),
+    );
 
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child);
@@ -155,19 +159,21 @@ fn single_client_forwarding_ipv4() {
     let bin = find_forwarder_bin();
 
     // run with small timeout & auto-exit on idle
-    let mut child = Command::new(bin)
-        .arg("127.0.0.1:0")
-        .arg(up_addr.to_string())
-        .arg("--timeout-secs")
-        .arg("1")
-        .arg("--on-timeout")
-        .arg("exit")
-        .arg("--stats-interval-mins")
-        .arg("0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn forwarder");
+    let mut child = ChildGuard::new(
+        Command::new(bin)
+            .arg("127.0.0.1:0")
+            .arg(up_addr.to_string())
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg("--on-timeout")
+            .arg("exit")
+            .arg("--stats-interval-mins")
+            .arg("0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn forwarder"),
+    );
 
     let mut out = take_child_stdout(&mut child);
     let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
@@ -262,19 +268,21 @@ fn single_client_forwarding_ipv6() {
     };
     let bin = find_forwarder_bin();
 
-    let mut child = Command::new(bin)
-        .arg("[::1]:0")
-        .arg(up_addr.to_string())
-        .arg("--timeout-secs")
-        .arg("1")
-        .arg("--on-timeout")
-        .arg("exit")
-        .arg("--stats-interval-mins")
-        .arg("0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn forwarder");
+    let mut child = ChildGuard::new(
+        Command::new(bin)
+            .arg("[::1]:0")
+            .arg(up_addr.to_string())
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg("--on-timeout")
+            .arg("exit")
+            .arg("--stats-interval-mins")
+            .arg("0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn forwarder"),
+    );
 
     let mut out = take_child_stdout(&mut child);
     let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));

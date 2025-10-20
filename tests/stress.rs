@@ -18,19 +18,21 @@ fn stress_one_minute_ipv4() {
     let bin = find_forwarder_bin();
 
     // run with small timeout & auto-exit on idle
-    let mut child = Command::new(bin)
-        .arg("127.0.0.1:0")
-        .arg(up_addr.to_string())
-        .arg("--timeout-secs")
-        .arg("2")
-        .arg("--on-timeout")
-        .arg("exit")
-        .arg("--stats-interval-mins")
-        .arg("1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn forwarder");
+    let mut child = ChildGuard::new(
+        Command::new(bin)
+            .arg("127.0.0.1:0")
+            .arg(up_addr.to_string())
+            .arg("--timeout-secs")
+            .arg("2")
+            .arg("--on-timeout")
+            .arg("exit")
+            .arg("--stats-interval-mins")
+            .arg("1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn forwarder"),
+    );
 
     let mut out = take_child_stdout(&mut child);
     let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
@@ -114,4 +116,5 @@ fn stress_one_minute_ipv4() {
     );
     assert_eq!(c2u_bytes, c2u_pkts * (payload.len() as u64));
     assert_eq!(u2c_bytes, u2c_pkts * (payload.len() as u64));
+    // assert!(false, "sent:{}\nrcvd:{}\n{}", sent, rcvd, stats.to_string());
 }
