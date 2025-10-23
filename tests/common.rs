@@ -106,15 +106,15 @@ pub fn spawn_udp_echo_server_v6() -> io::Result<(SocketAddr, thread::JoinHandle<
     Ok((addr, handle))
 }
 
-pub fn find_forwarder_bin() -> String {
+pub fn find_forwarder_bin() -> Option<String> {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_udp-forwarder") {
-        return p;
+        return Some(p);
     }
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_udp_forwarder") {
-        return p;
+        return Some(p);
     }
 
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
     let candidates = [
         format!("{}/target/debug/udp-forwarder", manifest_dir),
         format!("{}/target/debug/udp_forwarder", manifest_dir),
@@ -123,22 +123,22 @@ pub fn find_forwarder_bin() -> String {
     ];
     for c in &candidates {
         if std::path::Path::new(c).exists() {
-            return c.clone();
+            return Some(c.clone());
         }
     }
-    panic!(
-        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and {:?}",
-        candidates
-    );
+    None
 }
 
 /// Take ownership of the child's stdout, returning the ChildStdout handle.
-pub fn take_child_stdout(child: &mut std::process::Child) -> std::process::ChildStdout {
-    child.stdout.take().expect("child stdout missing")
+pub fn take_child_stdout(child: &mut std::process::Child) -> Option<std::process::ChildStdout> {
+    child.stdout.take()
 }
 
 /// Wait for a "Listening on ..." line from a generic reader, and parse the socket address.
-pub fn wait_for_listen_addr_from<R: Read>(reader: &mut R, max_wait: Duration) -> SocketAddr {
+pub fn wait_for_listen_addr_from<R: Read>(
+    reader: &mut R,
+    max_wait: Duration,
+) -> Option<SocketAddr> {
     let start = Instant::now();
     let mut buf = String::new();
     let mut r = BufReader::new(reader);
@@ -150,12 +150,9 @@ pub fn wait_for_listen_addr_from<R: Read>(reader: &mut R, max_wait: Duration) ->
                 buf.push_str(&line);
                 if let Some(rest) = line.strip_prefix("Listening on ") {
                     if let Some((addr_str, _)) = rest.split_once(',') {
-                        let mut it = addr_str
-                            .to_string()
-                            .to_socket_addrs()
-                            .expect("parse printed addr");
+                        let mut it = addr_str.to_string().to_socket_addrs().ok()?;
                         if let Some(sa) = it.next() {
-                            return sa;
+                            return Some(sa);
                         }
                     }
                 }
@@ -163,14 +160,11 @@ pub fn wait_for_listen_addr_from<R: Read>(reader: &mut R, max_wait: Duration) ->
             Err(_) => thread::sleep(Duration::from_millis(25)),
         }
     }
-    panic!(
-        "did not see 'Listening on' line within {:?}; saw: {}",
-        max_wait, buf
-    );
+    None
 }
 
 /// Wait for a JSON stats line from a generic reader.
-pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> Json {
+pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> Option<Json> {
     let start = Instant::now();
     let mut buf = String::new();
     let mut r = BufReader::new(reader);
@@ -183,7 +177,7 @@ pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> 
                 for l in buf.lines().rev() {
                     if l.starts_with('{') && l.ends_with('}') {
                         if let Ok(json) = serde_json::from_str::<Json>(l) {
-                            return json;
+                            return Some(json);
                         }
                     }
                 }
@@ -191,10 +185,7 @@ pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> 
             Err(_) => thread::sleep(Duration::from_millis(25)),
         }
     }
-    panic!(
-        "did not see stats JSON within {:?}; saw buffer: {}",
-        max_wait, buf
-    );
+    None
 }
 
 #[allow(dead_code)]

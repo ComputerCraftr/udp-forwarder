@@ -15,7 +15,12 @@ fn stress_one_minute_ipv4() {
     let client_sock = bind_udp_v4_client();
 
     // spawn the forwarder binary
-    let bin = find_forwarder_bin();
+    let bin_opt = find_forwarder_bin();
+    assert!(
+        bin_opt.is_some(),
+        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
+    );
+    let bin = bin_opt.unwrap();
 
     // run with small timeout & auto-exit on idle
     let mut child = ChildGuard::new(
@@ -34,8 +39,19 @@ fn stress_one_minute_ipv4() {
             .expect("spawn forwarder"),
     );
 
-    let mut out = take_child_stdout(&mut child);
-    let listen_addr = wait_for_listen_addr_from(&mut out, Duration::from_secs(2));
+    // Read the forwarder's listen address and connect the client
+    let out_opt = take_child_stdout(&mut child);
+    assert!(out_opt.is_some(), "child stdout missing");
+    let mut out = out_opt.unwrap();
+
+    let max_wait = Duration::from_secs(2);
+    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
+    assert!(
+        listen_addr_opt.is_some(),
+        "did not see listening address line within {:?}",
+        max_wait
+    );
+    let listen_addr = listen_addr_opt.unwrap();
     client_sock
         .connect(listen_addr)
         .expect("connect to forwarder (IPv4)");
@@ -79,7 +95,7 @@ fn stress_one_minute_ipv4() {
 
     // After ~2s of idle it should exit; give it a moment
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(2) {
+    while start.elapsed() < max_wait {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
@@ -93,7 +109,13 @@ fn stress_one_minute_ipv4() {
     let _ = child.kill();
 
     // Sanity check via stats snapshot
-    let stats = wait_for_stats_json_from(&mut out, Duration::from_secs(2));
+    let stats_opt = wait_for_stats_json_from(&mut out, max_wait);
+    assert!(
+        stats_opt.is_some(),
+        "did not see stats JSON line within {:?}",
+        max_wait
+    );
+    let stats = stats_opt.unwrap();
     let c2u_pkts = stats["c2u_pkts"].as_u64().unwrap();
     let u2c_pkts = stats["u2c_pkts"].as_u64().unwrap();
     let c2u_bytes = stats["c2u_bytes"].as_u64().unwrap();
