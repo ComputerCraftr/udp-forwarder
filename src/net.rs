@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use crate::stats::Stats;
 
+use socket2::{Domain, Protocol, Socket, Type};
+
 #[inline]
 pub fn send_payload(
     c2u: bool,
@@ -71,14 +73,39 @@ pub fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no address resolved"))
 }
 
-pub fn make_udp_socket(bind_addr: SocketAddr, read_timeout_ms: u64) -> io::Result<UdpSocket> {
-    let sock = UdpSocket::bind(bind_addr)?;
-    if read_timeout_ms == 0 {
-        sock.set_read_timeout(None)?; // block forever
-    } else {
-        sock.set_read_timeout(Some(Duration::from_millis(read_timeout_ms)))?;
+pub fn make_udp_socket(
+    bind_addr: SocketAddr,
+    read_timeout_ms: u64,
+    reuseaddr: bool,
+) -> io::Result<UdpSocket> {
+    let domain = match bind_addr {
+        SocketAddr::V4(_) => Domain::IPV4,
+        SocketAddr::V6(_) => Domain::IPV6,
+    };
+
+    // Construct a socket from scratch
+    let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+
+    // Allow SO_REUSEADDR for multi-threading
+    if reuseaddr {
+        sock.set_reuse_address(true)?;
     }
-    Ok(sock)
+
+    // Best-effort bigger buffers
+    sock.set_recv_buffer_size(1 << 20)?;
+    sock.set_send_buffer_size(1 << 20)?;
+
+    // Convert into UdpSocket
+    sock.bind(&bind_addr.into())?;
+    let udp_sock: UdpSocket = sock.into();
+
+    // Set inactive timeout between upstream manager refreshes
+    if read_timeout_ms == 0 {
+        udp_sock.set_read_timeout(None)?; // block forever
+    } else {
+        udp_sock.set_read_timeout(Some(Duration::from_millis(read_timeout_ms)))?;
+    }
+    Ok(udp_sock)
 }
 
 pub fn make_upstream_socket_for(dest: SocketAddr) -> io::Result<UdpSocket> {
@@ -87,7 +114,7 @@ pub fn make_upstream_socket_for(dest: SocketAddr) -> io::Result<UdpSocket> {
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     };
 
-    let sock = make_udp_socket(bind_addr, 5000)?;
+    let sock = make_udp_socket(bind_addr, 5000, false)?;
     sock.connect(dest)?;
     Ok(sock)
 }

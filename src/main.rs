@@ -25,7 +25,7 @@ fn main() -> io::Result<()> {
         Arc::new(UpstreamManager::new(&cfg.upstream_target).expect("upstream socket"));
 
     // Listener for the local client
-    let client_sock = make_udp_socket(cfg.listen_addr, 5000)?;
+    let client_sock = make_udp_socket(cfg.listen_addr, 5000, false)?;
 
     // Single-client state
     let client_peer = Arc::new(Mutex::new(None));
