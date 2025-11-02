@@ -27,7 +27,7 @@ pub struct Stats {
 
 impl Stats {
     pub fn new() -> Arc<Self> {
-        let (tx, rx) = sync_channel::<StatEvent>(8192);
+        let (tx, rx) = sync_channel::<StatEvent>(2 << 14);
         Arc::new(Self {
             start: OnceLock::new(),
             tx,
@@ -103,6 +103,12 @@ impl Stats {
                 u2c_lat_max: u64,
                 c2u_drops_oversize: u64,
                 u2c_drops_oversize: u64,
+                // Exponentially weighted moving averages (nanoseconds)
+                c2u_lat_ewma_ns: Option<f64>,
+                u2c_lat_ewma_ns: Option<f64>,
+                // Time-decay anchors for EWMA (last update timestamp)
+                c2u_last_ewma_at: Option<Instant>,
+                u2c_last_ewma_at: Option<Instant>,
             }
 
             let mut agg = Agg {
@@ -120,7 +126,38 @@ impl Stats {
                 u2c_lat_max: 0,
                 c2u_drops_oversize: 0,
                 u2c_drops_oversize: 0,
+                c2u_lat_ewma_ns: None,
+                u2c_lat_ewma_ns: None,
+                c2u_last_ewma_at: None,
+                u2c_last_ewma_at: None,
             };
+
+            // Time-based EWMA with 1-hour half-life.
+            // alpha(dt) = 1 - exp(-dt / tau)
+            // Using expm1 for numerical stability when dt << tau.
+            #[inline]
+            fn ewma_update(cur: &mut Option<f64>, last_at: &mut Option<Instant>, sample_ns: u64) {
+                const EWMA_TAU: f64 = 3600.0 / std::f64::consts::LN_2; // seconds in 1 hour
+                let now = Instant::now();
+                // Seed both the value and the timestamp on first sample
+                if cur.is_none() && last_at.is_none() {
+                    *cur = Some(sample_ns as f64);
+                    *last_at = Some(now);
+                    return;
+                }
+                // prev = old timestamp; also set last_at = Some(now)
+                let prev = last_at.replace(now).unwrap_or(now);
+                let dt = now.duration_since(prev).as_secs_f64();
+                // alpha = 1 - exp(-dt/tau); use expm1 for tiny dt
+                let alpha = -(-dt / EWMA_TAU).exp_m1();
+                let x = sample_ns as f64;
+                if let Some(v) = cur {
+                    *v = alpha * x + (1.0 - alpha) * *v;
+                } else {
+                    // Shouldn't happen, but seed defensively
+                    *cur = Some(x);
+                }
+            }
 
             // --- DRY helpers ---------------------------------------------------
             // Apply a single StatEvent to local aggregates
@@ -135,6 +172,7 @@ impl Stats {
                     if bytes > a.c2u_bytes_max {
                         a.c2u_bytes_max = bytes;
                     }
+                    ewma_update(&mut a.c2u_lat_ewma_ns, &mut a.c2u_last_ewma_at, lat_ns);
                 }
                 StatEvent::U2C { bytes, lat_ns } => {
                     a.u2c_pkts += 1;
@@ -146,6 +184,7 @@ impl Stats {
                     if bytes > a.u2c_bytes_max {
                         a.u2c_bytes_max = bytes;
                     }
+                    ewma_update(&mut a.u2c_lat_ewma_ns, &mut a.u2c_last_ewma_at, lat_ns);
                 }
                 StatEvent::C2UErr => {
                     a.c2u_errs = a.c2u_errs.saturating_add(1);
@@ -182,6 +221,8 @@ impl Stats {
                 } else {
                     0
                 };
+                let c2u_us_ewma = a.c2u_lat_ewma_ns.map(|v| (v as u64) / 1000).unwrap_or(0);
+                let u2c_us_ewma = a.u2c_lat_ewma_ns.map(|v| (v as u64) / 1000).unwrap_or(0);
                 let c2u_us_max = a.c2u_lat_max / 1000;
                 let u2c_us_max = a.u2c_lat_max / 1000;
                 let client_opt = { *client_peer.lock().unwrap() };
@@ -200,6 +241,7 @@ impl Stats {
                     "c2u_bytes_max": a.c2u_bytes_max,
                     "c2u_drops_oversize": a.c2u_drops_oversize,
                     "c2u_us_avg": c2u_us_avg,
+                    "c2u_us_ewma": c2u_us_ewma,
                     "c2u_us_max": c2u_us_max,
                     "c2u_errs": a.c2u_errs,
                     "u2c_pkts": a.u2c_pkts,
@@ -207,6 +249,7 @@ impl Stats {
                     "u2c_bytes_max": a.u2c_bytes_max,
                     "u2c_drops_oversize": a.u2c_drops_oversize,
                     "u2c_us_avg": u2c_us_avg,
+                    "u2c_us_ewma": u2c_us_ewma,
                     "u2c_us_max": u2c_us_max,
                     "u2c_errs": a.u2c_errs,
                 });

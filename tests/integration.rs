@@ -320,10 +320,42 @@ fn single_client_forwarding_ipv4() {
     );
 
     // Latency fields should be numeric
-    assert!(stats["c2u_us_avg"].is_number());
-    assert!(stats["u2c_us_avg"].is_number());
     assert!(stats["c2u_us_max"].is_number());
     assert!(stats["u2c_us_max"].is_number());
+    let c2u_us_max = stats["c2u_us_max"].as_u64().unwrap();
+    let u2c_us_max = stats["u2c_us_max"].as_u64().unwrap();
+    assert!(stats["c2u_us_avg"].is_number());
+    assert!(stats["u2c_us_avg"].is_number());
+    let c2u_us_avg = stats["c2u_us_avg"].as_u64().unwrap();
+    let u2c_us_avg = stats["u2c_us_avg"].as_u64().unwrap();
+    assert!(stats["c2u_us_ewma"].is_number());
+    assert!(stats["u2c_us_ewma"].is_number());
+    let c2u_us_ewma = stats["c2u_us_ewma"].as_u64().unwrap();
+    let u2c_us_ewma = stats["u2c_us_ewma"].as_u64().unwrap();
+    assert!(
+        c2u_us_max > c2u_us_avg,
+        "impossible value: c2u_us_avg {} >= c2u_us_max {}",
+        c2u_us_avg,
+        c2u_us_max
+    );
+    assert!(
+        u2c_us_max > u2c_us_avg,
+        "impossible value: u2c_us_avg {} >= u2c_us_max {}",
+        u2c_us_avg,
+        u2c_us_max
+    );
+    assert!(
+        c2u_us_max >= c2u_us_ewma,
+        "impossible value: c2u_us_ewma {} > c2u_us_max {}",
+        c2u_us_ewma,
+        c2u_us_max
+    );
+    assert!(
+        u2c_us_max >= u2c_us_ewma,
+        "impossible value: u2c_us_ewma {} > u2c_us_max {}",
+        u2c_us_ewma,
+        u2c_us_max
+    );
 }
 
 #[test]
@@ -449,9 +481,42 @@ fn single_client_forwarding_ipv6() {
         stats["u2c_bytes_max"].as_u64().unwrap_or(0),
         payload.len() as u64
     );
+
     // Latency fields should be numeric
-    assert!(stats["c2u_us_avg"].is_number());
-    assert!(stats["u2c_us_avg"].is_number());
     assert!(stats["c2u_us_max"].is_number());
     assert!(stats["u2c_us_max"].is_number());
+    let c2u_us_max = stats["c2u_us_max"].as_u64().unwrap();
+    let u2c_us_max = stats["u2c_us_max"].as_u64().unwrap();
+    assert!(stats["c2u_us_avg"].is_number());
+    assert!(stats["u2c_us_avg"].is_number());
+    let c2u_us_avg = stats["c2u_us_avg"].as_u64().unwrap();
+    let u2c_us_avg = stats["u2c_us_avg"].as_u64().unwrap();
+    assert!(stats["c2u_us_ewma"].is_number());
+    assert!(stats["u2c_us_ewma"].is_number());
+    let c2u_us_ewma = stats["c2u_us_ewma"].as_u64().unwrap();
+    let u2c_us_ewma = stats["u2c_us_ewma"].as_u64().unwrap();
+    assert!(
+        c2u_us_max > c2u_us_avg,
+        "impossible value: c2u_us_avg {} >= c2u_us_max {}",
+        c2u_us_avg,
+        c2u_us_max
+    );
+    assert!(
+        u2c_us_max > u2c_us_avg,
+        "impossible value: u2c_us_avg {} >= u2c_us_max {}",
+        u2c_us_avg,
+        u2c_us_max
+    );
+    assert!(
+        c2u_us_max >= c2u_us_ewma,
+        "impossible value: c2u_us_ewma {} > c2u_us_max {}",
+        c2u_us_ewma,
+        c2u_us_max
+    );
+    assert!(
+        u2c_us_max >= u2c_us_ewma,
+        "impossible value: u2c_us_ewma {} > u2c_us_max {}",
+        u2c_us_ewma,
+        u2c_us_max
+    );
 }
