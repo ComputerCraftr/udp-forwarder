@@ -212,12 +212,12 @@ impl Stats {
             let print_snapshot = |a: &Agg| {
                 let uptime = Self::uptime_seconds(&stats).unwrap_or(0);
                 let c2u_us_avg = if a.c2u_pkts > 0 {
-                    (a.c2u_lat_sum / a.c2u_pkts) / 1000
+                    a.c2u_lat_sum / (a.c2u_pkts * 1000)
                 } else {
                     0
                 };
                 let u2c_us_avg = if a.u2c_pkts > 0 {
-                    (a.u2c_lat_sum / a.u2c_pkts) / 1000
+                    a.u2c_lat_sum / (a.u2c_pkts * 1000)
                 } else {
                     0
                 };
