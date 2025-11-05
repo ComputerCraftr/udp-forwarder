@@ -14,12 +14,9 @@ fn enforce_max_payload_ipv4() {
     // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client();
 
-    // Spawn the forwarder binary
-    let bin_opt = find_forwarder_bin();
-    assert!(
-        bin_opt.is_some(),
-        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
-    );
+    // Spawn the app binary
+    let bin_opt = find_app_bin();
+    assert!(bin_opt.is_some(), "could not find app binary");
     let bin = bin_opt.unwrap();
 
     let mut child = ChildGuard::new(
@@ -37,7 +34,7 @@ fn enforce_max_payload_ipv4() {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("spawn forwarder"),
+            .expect("spawn app binary"),
     );
 
     // Read the forwarder's listen address and connect the client
@@ -118,12 +115,9 @@ fn enforce_max_payload_ipv6() {
         }
     };
 
-    // Spawn the forwarder binary
-    let bin_opt = find_forwarder_bin();
-    assert!(
-        bin_opt.is_some(),
-        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
-    );
+    // Spawn the app binary
+    let bin_opt = find_app_bin();
+    assert!(bin_opt.is_some(), "could not find app binary");
     let bin = bin_opt.unwrap();
 
     let mut child = ChildGuard::new(
@@ -141,7 +135,7 @@ fn enforce_max_payload_ipv6() {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("spawn forwarder"),
+            .expect("spawn app binary"),
     );
 
     // Read the forwarder's listen address and connect the client
@@ -214,12 +208,9 @@ fn single_client_forwarding_ipv4() {
     let client_sock = bind_udp_v4_client();
     let client_local = client_sock.local_addr().expect("client local addr");
 
-    // Spawn the forwarder binary
-    let bin_opt = find_forwarder_bin();
-    assert!(
-        bin_opt.is_some(),
-        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
-    );
+    // Spawn the app binary
+    let bin_opt = find_app_bin();
+    assert!(bin_opt.is_some(), "could not find app binary");
     let bin = bin_opt.unwrap();
 
     // Run with small timeout & auto-exit on idle
@@ -236,7 +227,7 @@ fn single_client_forwarding_ipv4() {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("spawn forwarder"),
+            .expect("spawn app binary"),
     );
 
     // Read the forwarder's listen address and connect the client
@@ -381,12 +372,9 @@ fn single_client_forwarding_ipv6() {
         }
     };
 
-    // Spawn the forwarder binary
-    let bin_opt = find_forwarder_bin();
-    assert!(
-        bin_opt.is_some(),
-        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
-    );
+    // Spawn the app binary
+    let bin_opt = find_app_bin();
+    assert!(bin_opt.is_some(), "could not find app binary");
     let bin = bin_opt.unwrap();
 
     let mut child = ChildGuard::new(
@@ -402,7 +390,7 @@ fn single_client_forwarding_ipv6() {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("spawn forwarder"),
+            .expect("spawn app binary"),
     );
 
     // Read the forwarder's listen address and connect the client
@@ -536,11 +524,8 @@ fn relock_after_timeout_drop_ipv4() {
     let client_b = bind_udp_v4_client();
 
     // Spawn the forwarder with short timeout and on-timeout=drop
-    let bin_opt = find_forwarder_bin();
-    assert!(
-        bin_opt.is_some(),
-        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
-    );
+    let bin_opt = find_app_bin();
+    assert!(bin_opt.is_some(), "could not find app binary");
     let bin = bin_opt.unwrap();
 
     let mut child = ChildGuard::new(
@@ -556,7 +541,7 @@ fn relock_after_timeout_drop_ipv4() {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("spawn forwarder"),
+            .expect("spawn app binary"),
     );
 
     // Read the forwarder's listen address and connect client A

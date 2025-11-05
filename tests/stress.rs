@@ -14,12 +14,9 @@ fn stress_one_minute_ipv4() {
     // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client();
 
-    // Spawn the forwarder binary
-    let bin_opt = find_forwarder_bin();
-    assert!(
-        bin_opt.is_some(),
-        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
-    );
+    // Spawn the app binary
+    let bin_opt = find_app_bin();
+    assert!(bin_opt.is_some(), "could not find app binary");
     let bin = bin_opt.unwrap();
 
     // Run with small timeout & auto-exit on idle
