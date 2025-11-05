@@ -1,19 +1,20 @@
 mod common;
 use common::*;
 
+use std::io::ErrorKind;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
 fn enforce_max_payload_ipv4() {
-    // upstream echo server
+    // Upstream echo server
     let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
 
-    // client socket bound to ephemeral local port
+    // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client();
 
-    // spawn the forwarder binary
+    // Spawn the forwarder binary
     let bin_opt = find_forwarder_bin();
     assert!(
         bin_opt.is_some(),
@@ -80,20 +81,21 @@ fn enforce_max_payload_ipv4() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
             }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // if it didn't exit, kill for cleanliness
+    // If it didn't exit, kill for cleanliness
     let _ = child.kill();
 
-    // check stats reflect one drop
-    let stats_opt = wait_for_stats_json_from(&mut out, max_wait);
+    // Check that the stats show one drop
+    let json_wait = Duration::from_millis(50);
+    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
     assert!(
         stats_opt.is_some(),
         "did not see stats JSON line within {:?}",
-        max_wait
+        json_wait
     );
     let stats = stats_opt.unwrap();
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
@@ -116,7 +118,7 @@ fn enforce_max_payload_ipv6() {
         }
     };
 
-    // spawn the forwarder binary
+    // Spawn the forwarder binary
     let bin_opt = find_forwarder_bin();
     assert!(
         bin_opt.is_some(),
@@ -183,20 +185,21 @@ fn enforce_max_payload_ipv6() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
             }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // if it didn't exit, kill for cleanliness
+    // If it didn't exit, kill for cleanliness
     let _ = child.kill();
 
-    // check stats reflect one drop
-    let stats_opt = wait_for_stats_json_from(&mut out, max_wait);
+    // Check that the stats show one drop
+    let json_wait = Duration::from_millis(50);
+    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
     assert!(
         stats_opt.is_some(),
         "did not see stats JSON line within {:?}",
-        max_wait
+        json_wait
     );
     let stats = stats_opt.unwrap();
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
@@ -204,14 +207,14 @@ fn enforce_max_payload_ipv6() {
 
 #[test]
 fn single_client_forwarding_ipv4() {
-    // upstream echo server
+    // Upstream echo server
     let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
 
-    // client socket bound to ephemeral local port
+    // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client();
     let client_local = client_sock.local_addr().expect("client local addr");
 
-    // spawn the forwarder binary
+    // Spawn the forwarder binary
     let bin_opt = find_forwarder_bin();
     assert!(
         bin_opt.is_some(),
@@ -219,7 +222,7 @@ fn single_client_forwarding_ipv4() {
     );
     let bin = bin_opt.unwrap();
 
-    // run with small timeout & auto-exit on idle
+    // Run with small timeout & auto-exit on idle
     let mut child = ChildGuard::new(
         Command::new(bin)
             .arg("127.0.0.1:0")
@@ -272,20 +275,21 @@ fn single_client_forwarding_ipv4() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
             }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // if it didn't exit, kill for cleanliness
+    // If it didn't exit, kill for cleanliness
     let _ = child.kill();
 
     // Validate stats snapshot fields
-    let stats_opt = wait_for_stats_json_from(&mut out, max_wait);
+    let json_wait = Duration::from_millis(50);
+    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
     assert!(
         stats_opt.is_some(),
         "did not see stats JSON line within {:?}",
-        max_wait
+        json_wait
     );
     let stats = stats_opt.unwrap();
     assert!(stats["uptime_s"].is_number());
@@ -377,7 +381,7 @@ fn single_client_forwarding_ipv6() {
         }
     };
 
-    // spawn the forwarder binary
+    // Spawn the forwarder binary
     let bin_opt = find_forwarder_bin();
     assert!(
         bin_opt.is_some(),
@@ -437,20 +441,21 @@ fn single_client_forwarding_ipv6() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
             }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // if it didn't exit, kill for cleanliness
+    // If it didn't exit, kill for cleanliness
     let _ = child.kill();
 
     // Validate stats snapshot fields
-    let stats_opt = wait_for_stats_json_from(&mut out, max_wait);
+    let json_wait = Duration::from_millis(50);
+    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
     assert!(
         stats_opt.is_some(),
         "did not see stats JSON line within {:?}",
-        max_wait
+        json_wait
     );
     let stats = stats_opt.unwrap();
     assert!(stats["uptime_s"].is_number());
@@ -518,5 +523,180 @@ fn single_client_forwarding_ipv6() {
         "impossible value: u2c_us_ewma {} > u2c_us_max {}",
         u2c_us_ewma,
         u2c_us_max
+    );
+}
+
+#[test]
+fn relock_after_timeout_drop_ipv4() {
+    // Upstream echo server
+    let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
+
+    // Two client sockets (different ephemeral ports)
+    let client_a = bind_udp_v4_client();
+    let client_b = bind_udp_v4_client();
+
+    // Spawn the forwarder with short timeout and on-timeout=drop
+    let bin_opt = find_forwarder_bin();
+    assert!(
+        bin_opt.is_some(),
+        "could not find forwarder binary; tried env(CARGO_BIN_EXE_udp[-_]forwarder) and ./target"
+    );
+    let bin = bin_opt.unwrap();
+
+    let mut child = ChildGuard::new(
+        Command::new(bin)
+            .arg("127.0.0.1:22798")
+            .arg(up_addr.to_string())
+            .arg("--timeout-secs")
+            .arg("2")
+            .arg("--on-timeout")
+            .arg("drop")
+            .arg("--stats-interval-mins")
+            .arg("0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn forwarder"),
+    );
+
+    // Read the forwarder's listen address and connect client A
+    let out_opt = take_child_stdout(&mut child);
+    assert!(out_opt.is_some(), "child stdout missing");
+    let mut out = out_opt.unwrap();
+
+    let max_wait = Duration::from_secs(2);
+    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
+    assert!(
+        listen_addr_opt.is_some(),
+        "did not see listening address line within {:?}",
+        max_wait
+    );
+    let listen_addr = listen_addr_opt.unwrap();
+
+    client_a
+        .connect(listen_addr)
+        .expect("connect A -> forwarder");
+
+    // Send a packet from client A; wait for the forwarder to announce the lock, then expect echo
+    let payload_a = b"first-client";
+    client_a.send(payload_a).expect("send A");
+
+    // Confirm the forwarder locked to client A
+    let a_locked_opt = wait_for_locked_client_from(&mut out, max_wait);
+    assert!(
+        a_locked_opt.is_some(),
+        "did not see lock line for client A within {:?}",
+        max_wait
+    );
+    let a_locked = a_locked_opt.unwrap();
+    let client_a_local = client_a.local_addr().expect("client A local addr");
+    assert_eq!(
+        a_locked, client_a_local,
+        "forwarder locked to unexpected client A address"
+    );
+
+    let mut buf = [0u8; 1024];
+    let n = client_a.recv(&mut buf).expect("recv echo A");
+    assert_eq!(&buf[..n], payload_a);
+
+    // Now go idle > timeout so watchdog drops the lock and disconnects
+    thread::sleep(max_wait + Duration::from_millis(250));
+
+    // Ensure process did NOT exit under on-timeout=drop
+    if let Ok(Some(status)) = child.try_wait() {
+        panic!("forwarder exited unexpectedly with status: {status}");
+    }
+
+    // Connect client B and send a packet; then wait for the lock line and expect echo
+    client_b
+        .connect(listen_addr)
+        .expect("connect B -> forwarder");
+    let payload_b = b"second-client";
+    client_b
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .expect("set read timeout on client B");
+
+    // Trigger relock by sending a few datagrams, then wait explicitly for the lock line.
+    let client_wait = Duration::from_millis(250);
+
+    // Stage 1: send until we see the forwarder announce the new locked client.
+    let mut b_locked_opt = None;
+    for _ in 0..40 {
+        let _ = client_b.send(payload_b);
+        if let Some(locked) = wait_for_locked_client_from(&mut out, client_wait) {
+            b_locked_opt = Some(locked);
+            break;
+        }
+        // Socket/forwarder might be busy; brief backoff and retry.
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(
+        b_locked_opt.is_some(),
+        "did not see lock line for client B within {:?}",
+        client_wait
+    );
+    let b_locked = b_locked_opt.unwrap();
+    let client_b_local = client_b.local_addr().expect("client B local addr");
+    assert_eq!(
+        b_locked, client_b_local,
+        "forwarder locked to unexpected client B address"
+    );
+
+    // Stage 2: now that the forwarder is relocked, receive the echo.
+    // Allow brief transient conditions by retrying and re-sending.
+    client_b
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .expect("set read timeout on client B");
+
+    let mut got: Option<usize> = None;
+    for _ in 0..40 {
+        match client_b.recv(&mut buf) {
+            Ok(n) => {
+                got = Some(n);
+                break;
+            }
+            Err(e)
+                if e.kind() == ErrorKind::WouldBlock
+                    || e.kind() == ErrorKind::TimedOut
+                    || e.kind() == ErrorKind::ConnectionRefused =>
+            {
+                // Nudge pipeline and try again
+                let _ = client_b.send(payload_b);
+                thread::sleep(Duration::from_millis(30));
+                continue;
+            }
+            Err(e) => panic!("recv echo B: {e}"),
+        }
+    }
+    let n = got.expect("did not receive echo from forwarder after re-lock");
+    assert_eq!(&buf[..n], payload_b);
+
+    // Give forwarder a moment to print stats, then terminate cleanly
+    let json_wait = Duration::from_millis(50);
+    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
+    let _ = child.kill();
+
+    // Check that the stats show the new client address matches client B and at least two pkts
+    assert!(
+        stats_opt.is_some(),
+        "did not see stats JSON line within {:?}",
+        json_wait
+    );
+    let stats = stats_opt.unwrap();
+
+    // The last locked client should be B (its local addr)
+    let stats_client = json_addr(&stats["client_addr"]);
+    assert_eq!(
+        stats_client, client_b_local,
+        "forwarder did not relock to client B"
+    );
+
+    // Sanity: we sent at least one pkt each direction for A and B (echo path), totals >= 2
+    let c2u_pkts = stats["c2u_pkts"].as_u64().unwrap_or(0);
+    let u2c_pkts = stats["u2c_pkts"].as_u64().unwrap_or(0);
+    assert!(
+        c2u_pkts >= 2 && u2c_pkts >= 2,
+        "unexpected low packet counts: c2u={c2u_pkts} u2c={u2c_pkts}"
     );
 }

@@ -2,7 +2,7 @@ use serde_json::json;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process;
-use std::sync::atomic::{AtomicBool, Ordering as AtomOrdering};
+use std::sync::atomic::{AtomicU32, Ordering as AtomOrdering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -77,7 +77,7 @@ impl Stats {
         client_peer: Arc<Mutex<Option<SocketAddr>>>,
         upstream_mgr: Arc<UpstreamManager>,
         every_secs: u64,
-        should_exit: Arc<AtomicBool>,
+        exit_code_set: Arc<AtomicU32>,
     ) -> bool {
         let every = every_secs.max(1);
         let stats = Arc::clone(self);
@@ -246,7 +246,8 @@ impl Stats {
             let mut next_tick = Instant::now() + period;
             loop {
                 // Cooperative shutdown: when exit is requested, drain, print once, and exit
-                if should_exit.load(AtomOrdering::Relaxed) {
+                let exit_code_local = exit_code_set.load(AtomOrdering::Relaxed);
+                if (exit_code_local & (1 << 31)) != 0 {
                     loop {
                         let ev = rx.try_recv();
                         match ev {
@@ -255,7 +256,8 @@ impl Stats {
                         }
                     }
                     print_snapshot(&agg);
-                    process::exit(0);
+                    let exit_code = (exit_code_local & !(1 << 31)) as i32;
+                    process::exit(exit_code);
                 }
                 let now = Instant::now();
                 let wait = next_tick

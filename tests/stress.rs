@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 #[test]
 #[ignore] // opt-in: `cargo test --test stress -- --ignored --nocapture`
 fn stress_one_minute_ipv4() {
-    // upstream echo server
+    // Upstream echo server
     let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
 
-    // client socket bound to ephemeral local port
+    // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client();
 
-    // spawn the forwarder binary
+    // Spawn the forwarder binary
     let bin_opt = find_forwarder_bin();
     assert!(
         bin_opt.is_some(),
@@ -22,7 +22,7 @@ fn stress_one_minute_ipv4() {
     );
     let bin = bin_opt.unwrap();
 
-    // run with small timeout & auto-exit on idle
+    // Run with small timeout & auto-exit on idle
     let mut child = ChildGuard::new(
         Command::new(bin)
             .arg("127.0.0.1:0")
@@ -100,20 +100,21 @@ fn stress_one_minute_ipv4() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
             }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // if it didn't exit, kill for cleanliness
+    // If it didn't exit, kill for cleanliness
     let _ = child.kill();
 
     // Sanity check via stats snapshot
-    let stats_opt = wait_for_stats_json_from(&mut out, max_wait);
+    let json_wait = Duration::from_millis(50);
+    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
     assert!(
         stats_opt.is_some(),
         "did not see stats JSON line within {:?}",
-        max_wait
+        json_wait
     );
     let stats = stats_opt.unwrap();
     let c2u_pkts = stats["c2u_pkts"].as_u64().unwrap();

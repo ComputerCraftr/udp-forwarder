@@ -140,20 +140,52 @@ pub fn wait_for_listen_addr_from<R: Read>(
     max_wait: Duration,
 ) -> Option<SocketAddr> {
     let start = Instant::now();
-    let mut buf = String::new();
     let mut r = BufReader::new(reader);
     while start.elapsed() < max_wait {
         let mut line = String::new();
         match r.read_line(&mut line) {
             Ok(0) => thread::sleep(Duration::from_millis(25)),
             Ok(_) => {
-                buf.push_str(&line);
                 if let Some(rest) = line.strip_prefix("Listening on ") {
                     if let Some((addr_str, _)) = rest.split_once(',') {
                         let mut it = addr_str.to_string().to_socket_addrs().ok()?;
                         if let Some(sa) = it.next() {
                             return Some(sa);
                         }
+                    }
+                }
+            }
+            Err(_) => thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    None
+}
+
+/// Wait for a "Locked to single client ... (connected)" line from a generic reader,
+/// and parse the socket address of the newly locked client.
+#[allow(dead_code)]
+pub fn wait_for_locked_client_from<R: Read>(
+    reader: &mut R,
+    max_wait: Duration,
+) -> Option<SocketAddr> {
+    let start = Instant::now();
+    let mut r = BufReader::new(reader);
+    const PREFIX: &str = "Locked to single client ";
+    while start.elapsed() < max_wait {
+        let mut line = String::new();
+        match r.read_line(&mut line) {
+            Ok(0) => thread::sleep(Duration::from_millis(25)),
+            Ok(_) => {
+                if let Some(rest) = line.strip_prefix(PREFIX) {
+                    // Expected form: "<addr> (connected)\n"
+                    let addr_part = match rest.split_once(' ') {
+                        Some((addr, _)) => addr,
+                        None => rest.trim_end(),
+                    };
+                    // Resolve and return the first parsed SocketAddr
+                    let mut it = addr_part.to_string().to_socket_addrs().ok()?;
+                    if let Some(sa) = it.next() {
+                        return Some(sa);
                     }
                 }
             }
@@ -174,15 +206,15 @@ pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> 
             Ok(0) => thread::sleep(Duration::from_millis(25)),
             Ok(_) => {
                 buf.push_str(&line);
-                for l in buf.lines().rev() {
-                    if l.starts_with('{') && l.ends_with('}') {
-                        if let Ok(json) = serde_json::from_str::<Json>(l) {
-                            return Some(json);
-                        }
-                    }
-                }
             }
             Err(_) => thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    for l in buf.lines().rev() {
+        if l.starts_with('{') && l.ends_with('}') {
+            if let Ok(json) = serde_json::from_str::<Json>(l) {
+                return Some(json);
+            }
         }
     }
     None
@@ -191,6 +223,11 @@ pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> 
 #[allow(dead_code)]
 pub fn json_addr(v: &Json) -> SocketAddr {
     let s = v.as_str().expect("expected string socket addr in JSON");
+
+    if s == "null" {
+        panic!("null socket addr string in JSON");
+    }
+
     s.parse::<SocketAddr>()
         .expect("invalid socket addr string in JSON")
 }

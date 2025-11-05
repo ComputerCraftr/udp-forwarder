@@ -4,13 +4,13 @@ mod stats;
 mod upstream;
 
 use cli::{TimeoutAction, parse_args};
-use net::{make_udp_socket, resolve_first, send_payload};
+use net::{make_udp_socket, resolve_first, send_payload, udp_disconnect};
 use stats::Stats;
 use upstream::UpstreamManager;
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ fn main() -> io::Result<()> {
         Arc::new(UpstreamManager::new(&cfg.upstream_target).expect("upstream socket"));
 
     // Listener for the local client
-    let client_sock = make_udp_socket(cfg.listen_addr, 5000, false)?;
+    let client_sock = Arc::new(make_udp_socket(cfg.listen_addr, 5000, false)?);
 
     // Single-client state
     let client_peer = Arc::new(Mutex::new(None));
@@ -33,7 +33,7 @@ fn main() -> io::Result<()> {
     let last_seen_ns = Arc::new(AtomicU64::new(0));
 
     let stats = Stats::new();
-    let should_exit = Arc::new(AtomicBool::new(false));
+    let exit_code_set = Arc::new(AtomicU32::new(0));
 
     println!(
         "Listening on {}, forwarding to upstream {}. Waiting for first client...",
@@ -48,7 +48,7 @@ fn main() -> io::Result<()> {
 
     // Client -> Upstream
     {
-        let client_sock_a = client_sock.try_clone()?;
+        let client_sock_a = Arc::clone(&client_sock);
         let client_peer_a = Arc::clone(&client_peer);
         let locked_a = Arc::clone(&locked);
         let last_seen_a = Arc::clone(&last_seen_ns);
@@ -156,7 +156,7 @@ fn main() -> io::Result<()> {
 
     // Upstream -> Client
     {
-        let client_sock_b = client_sock.try_clone()?;
+        let client_sock_b = Arc::clone(&client_sock);
         let client_peer_b = Arc::clone(&client_peer);
         let locked_b = Arc::clone(&locked);
         let last_seen_b = Arc::clone(&last_seen_ns);
@@ -214,10 +214,12 @@ fn main() -> io::Result<()> {
 
     // Idle timeout watchdog
     {
+        let client_sock_w = Arc::clone(&client_sock);
         let client_peer_w = Arc::clone(&client_peer);
         let locked_w = Arc::clone(&locked);
         let last_seen_w = Arc::clone(&last_seen_ns);
-        let should_exit_w = Arc::clone(&should_exit);
+        let exit_code_set_w = Arc::clone(&exit_code_set);
+
         thread::spawn(move || {
             let timeout_ns = Duration::from_secs(cfg.timeout_secs)
                 .as_nanos()
@@ -232,17 +234,24 @@ fn main() -> io::Result<()> {
                     if expired {
                         match cfg.on_timeout {
                             TimeoutAction::Drop => {
+                                eprintln!(
+                                    "Idle timeout reached ({}s): dropping locked client; waiting for a new client",
+                                    cfg.timeout_secs
+                                );
+                                if let Err(e) = udp_disconnect(&client_sock_w) {
+                                    eprintln!("udp disconnect failed: {}", e);
+                                    exit_code_set_w.store((1 << 31) + 1, AtomOrdering::Relaxed);
+                                }
                                 *client_peer_w.lock().unwrap() = None;
                                 locked_w.store(false, AtomOrdering::Relaxed);
                                 last_seen_w.store(0, AtomOrdering::Relaxed);
-                                eprintln!(
-                                    "Idle timeout reached ({}s): dropped locked client; waiting for a new client",
-                                    cfg.timeout_secs
-                                );
                             }
                             TimeoutAction::Exit => {
-                                eprintln!("Idle timeout reached ({}s): exiting", cfg.timeout_secs);
-                                should_exit_w.store(true, AtomOrdering::Relaxed);
+                                eprintln!(
+                                    "Idle timeout reached ({}s): exiting cleanly",
+                                    cfg.timeout_secs
+                                );
+                                exit_code_set_w.store(1 << 31, AtomOrdering::Relaxed);
                                 return;
                             }
                         }
@@ -264,7 +273,7 @@ fn main() -> io::Result<()> {
         Arc::clone(&client_peer),
         Arc::clone(&upstream_mgr),
         u64::from(cfg.stats_interval_mins).saturating_mul(60),
-        Arc::clone(&should_exit),
+        Arc::clone(&exit_code_set),
     );
 
     // Keep main alive
