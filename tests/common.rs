@@ -1,4 +1,4 @@
-// tests/common.rs — shared helpers for integration and stress tests
+/* tests/common.rs — shared helpers for integration and stress tests */
 use serde_json::Value as Json;
 use std::io::{self, BufRead, BufReader, Read};
 use std::net::{
@@ -106,24 +106,90 @@ pub fn spawn_udp_echo_server_v6() -> io::Result<(SocketAddr, thread::JoinHandle<
     Ok((addr, handle))
 }
 
+/// Try to locate the built forwarder binary across platforms (Linux/macOS/Windows).
 pub fn find_forwarder_bin() -> Option<String> {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_udp-forwarder") {
-        return Some(p);
-    }
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_udp_forwarder") {
-        return Some(p);
+    use std::env;
+    use std::path::{Path, PathBuf};
+
+    fn with_ext(name: &str) -> String {
+        if cfg!(windows) {
+            if name.ends_with(".exe") {
+                name.to_string()
+            } else {
+                format!("{name}.exe")
+            }
+        } else {
+            name.to_string()
+        }
     }
 
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let candidates = [
-        format!("{}/target/debug/udp-forwarder", manifest_dir),
-        format!("{}/target/debug/udp_forwarder", manifest_dir),
-        format!("{}/target/release/udp-forwarder", manifest_dir),
-        format!("{}/target/release/udp_forwarder", manifest_dir),
-    ];
-    for c in &candidates {
-        if std::path::Path::new(c).exists() {
-            return Some(c.clone());
+    // 1) Cargo-provided env vars for binaries built in this package.
+    // Cargo defines CARGO_BIN_EXE_<bin-name-with-hyphens> (hyphens become underscores).
+    // Try both hyphen and underscore forms.
+    if let Ok(p) = env::var("CARGO_BIN_EXE_udp-forwarder") {
+        if Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(p) = env::var("CARGO_BIN_EXE_udp_forwarder") {
+        if Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+
+    // Helper: check a list of candidate paths.
+    fn first_existing(paths: &[PathBuf]) -> Option<String> {
+        for p in paths {
+            if p.exists() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+        None
+    }
+
+    // 2) Look next to the test executable (target/{debug,release}/deps/<test>…).
+    // Climb up to target/{debug,release} and probe for the bin names.
+    if let Ok(mut exe) = env::current_exe() {
+        if exe.pop() {
+            // deps/
+            if exe.pop() {
+                // debug/ or release/
+                let mut cands = Vec::new();
+                for bin in ["udp-forwarder", "udp_forwarder"] {
+                    cands.push(exe.join(with_ext(bin)));
+                }
+                if let Some(p) = first_existing(&cands) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    // 3) Try paths under CARGO_TARGET_DIR (if set).
+    if let Ok(target_dir) = env::var("CARGO_TARGET_DIR") {
+        let target = PathBuf::from(target_dir);
+        let mut cands = Vec::new();
+        for profile in ["debug", "release"] {
+            for bin in ["udp-forwarder", "udp_forwarder"] {
+                cands.push(target.join(profile).join(with_ext(bin)));
+            }
+        }
+        if let Some(p) = first_existing(&cands) {
+            return Some(p);
+        }
+    }
+
+    // 4) Fall back to paths under the manifest directory.
+    if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
+        let md = PathBuf::from(manifest_dir);
+        let mut cands = Vec::new();
+        for profile in ["debug", "release"] {
+            for bin in ["udp-forwarder", "udp_forwarder"] {
+                cands.push(md.join("target").join(profile).join(with_ext(bin)));
+            }
+        }
+        if let Some(p) = first_existing(&cands) {
+            return Some(p);
         }
     }
     None
