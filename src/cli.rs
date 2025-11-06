@@ -21,7 +21,7 @@ pub struct Config {
 pub fn parse_args() -> Config {
     // One place for usage. Program name is filled dynamically.
     fn print_usage_and_exit(code: i32) -> ! {
-        let prog = env::args().next().unwrap_or_else(|| "udp-forwarder".into());
+        let prog = env::args().next().unwrap_or_else(|| "pkthere".into());
         eprintln!(
             "Usage: {prog} --here <listen_ip:port> --there <upstream_host_or_ip:port>\n\
              \n\
