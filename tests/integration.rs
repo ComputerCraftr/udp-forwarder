@@ -21,7 +21,9 @@ fn enforce_max_payload_ipv4() {
 
     let mut child = ChildGuard::new(
         Command::new(bin)
+            .arg("--here")
             .arg("127.0.0.1:0")
+            .arg("--there")
             .arg(up_addr.to_string())
             .arg("--timeout-secs")
             .arg("1")
@@ -122,7 +124,9 @@ fn enforce_max_payload_ipv6() {
 
     let mut child = ChildGuard::new(
         Command::new(bin)
+            .arg("--here")
             .arg("[::1]:0")
+            .arg("--there")
             .arg(up_addr.to_string())
             .arg("--timeout-secs")
             .arg("1")
@@ -216,7 +220,9 @@ fn single_client_forwarding_ipv4() {
     // Run with small timeout & auto-exit on idle
     let mut child = ChildGuard::new(
         Command::new(bin)
+            .arg("--here")
             .arg("127.0.0.1:0")
+            .arg("--there")
             .arg(up_addr.to_string())
             .arg("--timeout-secs")
             .arg("1")
@@ -379,7 +385,9 @@ fn single_client_forwarding_ipv6() {
 
     let mut child = ChildGuard::new(
         Command::new(bin)
+            .arg("--here")
             .arg("[::1]:0")
+            .arg("--there")
             .arg(up_addr.to_string())
             .arg("--timeout-secs")
             .arg("1")
@@ -530,7 +538,9 @@ fn relock_after_timeout_drop_ipv4() {
 
     let mut child = ChildGuard::new(
         Command::new(bin)
+            .arg("--here")
             .arg("127.0.0.1:22798")
+            .arg("--there")
             .arg(up_addr.to_string())
             .arg("--timeout-secs")
             .arg("2")

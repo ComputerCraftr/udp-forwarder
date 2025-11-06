@@ -22,7 +22,9 @@ fn stress_one_minute_ipv4() {
     // Run with small timeout & auto-exit on idle
     let mut child = ChildGuard::new(
         Command::new(bin)
+            .arg("--here")
             .arg("127.0.0.1:0")
+            .arg("--there")
             .arg(up_addr.to_string())
             .arg("--timeout-secs")
             .arg("2")
