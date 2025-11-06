@@ -35,6 +35,19 @@ fn main() -> io::Result<()> {
     let stats = Stats::new();
     let exit_code_set = Arc::new(AtomicU32::new(0));
 
+    // Graceful shutdown on Ctrl-C / SIGINT (and SIGTERM on Unix via ctrlc)
+    {
+        let exit_code_set_c = Arc::clone(&exit_code_set);
+
+        // Exit code 130 is the conventional code for SIGINT (128 + SIGINT)
+        const SIGINT_EXIT: u32 = (1 << 31) | 130;
+        ctrlc::set_handler(move || {
+            // Signal the main loop to exit with code 130
+            exit_code_set_c.store(SIGINT_EXIT, AtomOrdering::Relaxed);
+        })
+        .expect("failed to set Ctrl-C handler");
+    }
+
     println!(
         "Listening on {}, forwarding to upstream {}. Waiting for first client...",
         client_sock.local_addr()?,
@@ -240,7 +253,8 @@ fn main() -> io::Result<()> {
                                 );
                                 if let Err(e) = udp_disconnect(&client_sock_w) {
                                     eprintln!("udp disconnect failed: {}", e);
-                                    exit_code_set_w.store((1 << 31) + 1, AtomOrdering::Relaxed);
+                                    exit_code_set_w.store((1 << 31) | 1, AtomOrdering::Relaxed);
+                                    return;
                                 }
                                 *client_peer_w.lock().unwrap() = None;
                                 locked_w.store(false, AtomOrdering::Relaxed);

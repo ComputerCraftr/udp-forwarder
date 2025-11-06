@@ -259,11 +259,8 @@ impl Stats {
                     let exit_code = (exit_code_local & !(1 << 31)) as i32;
                     process::exit(exit_code);
                 }
-                let now = Instant::now();
-                let wait = next_tick
-                    .saturating_duration_since(now)
-                    .max(Duration::from_millis(250));
-                let ev = rx.recv_timeout(wait);
+                let max_wait = Duration::from_millis(250);
+                let ev = rx.recv_timeout(max_wait);
                 match ev {
                     Ok(ev) => {
                         // process one event then drain any additional queued events
@@ -278,9 +275,18 @@ impl Stats {
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => {
-                        // time to print a snapshot
-                        print_snapshot(&agg);
-                        next_tick += period;
+                        // If we've crossed one or more period boundaries, print exactly once,
+                        // then advance next_tick to the first boundary *after* now.
+                        let now = Instant::now();
+                        if now >= next_tick {
+                            print_snapshot(&agg);
+                            // Advance next_tick by the number of full periods elapsed (>= 1).
+                            // period is in whole seconds (every >= 1), so this math is exact.
+                            let elapsed = now.duration_since(next_tick).as_secs();
+                            let per = every; // >= 1
+                            let skipped = (elapsed / per) + 1; // at least one boundary
+                            next_tick += Duration::from_secs(skipped * per);
+                        }
                     }
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
