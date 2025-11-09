@@ -1,5 +1,6 @@
 mod common;
-use common::*;
+
+use crate::common::*;
 
 use std::io::ErrorKind;
 use std::process::{Command, Stdio};
