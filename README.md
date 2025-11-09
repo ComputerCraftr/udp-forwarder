@@ -16,6 +16,6 @@ Build:
 
 Run examples:
 
-- `./target/release/pkthere --here 0.0.0.0:5354 --there 1.1.1.1:53`
-- `./target/release/pkthere --here 0.0.0.0:5354 --there one.one.one.one:53 --timeout-secs 45 --on-timeout drop`
-- `./target/release/pkthere --here 0.0.0.0:5354 --there [2606:4700:4700::1001]:53 --on-timeout exit`
+- `./target/release/pkthere --here UDP:0.0.0.0:5354 --there UDP:1.1.1.1:53`
+- `./target/release/pkthere --here UDP:0.0.0.0:5354 --there UDP:one.one.one.one:53 --timeout-secs 45 --on-timeout drop`
+- `./target/release/pkthere --here UDP:0.0.0.0:5354 --there UDP:[2606:4700:4700::1001]:53 --on-timeout exit`
