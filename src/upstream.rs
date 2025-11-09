@@ -11,6 +11,7 @@ pub struct UpstreamManager {
     current_addr: Arc<Mutex<SocketAddr>>, // cold-path updates only
     sock: Arc<Mutex<UdpSocket>>,          // cold-path replacement only
     version: AtomicU64,                   // increments on any change
+    periodic_started: AtomicBool,         // ensures spawn_periodic runs once
 }
 
 impl UpstreamManager {
@@ -21,6 +22,7 @@ impl UpstreamManager {
             current_addr: Arc::new(Mutex::new(addr)),
             sock: Arc::new(Mutex::new(sock)),
             version: AtomicU64::new(0),
+            periodic_started: AtomicBool::new(false),
         })
     }
 
@@ -89,9 +91,17 @@ impl UpstreamManager {
         target: String,
         every_secs: u64,
         locked: Arc<AtomicBool>,
-    ) {
+    ) -> bool {
         if every_secs == 0 {
-            return;
+            return false;
+        }
+        // Single-init gate like stats thread: only allow one periodic worker.
+        if self
+            .periodic_started
+            .compare_exchange(false, true, AtomOrdering::Relaxed, AtomOrdering::Relaxed)
+            .is_err()
+        {
+            return false; // already running
         }
         let mgr = Arc::clone(self);
         thread::spawn(move || {
@@ -104,6 +114,7 @@ impl UpstreamManager {
                 let _ = mgr.apply_fresh(&target, "Periodic re-resolve");
             }
         });
+        true
     }
 
     /// Current version for lock-free checks in hot paths.
