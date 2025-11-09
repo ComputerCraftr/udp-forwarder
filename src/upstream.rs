@@ -1,15 +1,17 @@
 use crate::net::{family_changed, make_upstream_socket_for, resolve_first};
+use socket2::{SockAddr, Socket};
+
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// Manages current upstream destination and a hot-swappable UdpSocket.
+/// Manages current upstream destination and a hot-swappable Socket.
 pub struct UpstreamManager {
     current_addr: Arc<Mutex<SocketAddr>>, // cold-path updates only
-    sock: Arc<Mutex<UdpSocket>>,          // cold-path replacement only
+    sock: Arc<Mutex<Socket>>,             // cold-path replacement only
     version: AtomicU64,                   // increments on any change
     periodic_started: AtomicBool,         // ensures spawn_periodic runs once
 }
@@ -35,7 +37,7 @@ impl UpstreamManager {
         &self,
         target: &str,
         context: &str,
-    ) -> io::Result<(UdpSocket, SocketAddr, u64)> {
+    ) -> io::Result<(Socket, SocketAddr, u64)> {
         let fresh = resolve_first(target)?;
 
         // Compare against previous before updating to compute correct family flip
@@ -66,7 +68,8 @@ impl UpstreamManager {
             println!("{context}: upstream {fresh}");
             // Same family, different address: reconnect existing socket in place.
             let guard = self.sock.lock().unwrap();
-            guard.connect(fresh)?;
+            let saddr = SockAddr::from(fresh);
+            guard.connect(&saddr)?;
             // Return a clone of the now-updated internal socket
             guard.try_clone()?
         } else {
@@ -125,7 +128,7 @@ impl UpstreamManager {
 
     /// Clone current socket and read current dest (cold path under mutexes).
     /// Use this only when your cached version != `version()`.
-    pub fn refresh_handles(&self) -> (UdpSocket, SocketAddr, u64) {
+    pub fn refresh_handles(&self) -> (Socket, SocketAddr, u64) {
         // lock order: sock then addr (stable and short-lived)
         let sock = Self::clone_socket(self);
         let dest = Self::current_dest(self);
@@ -134,7 +137,7 @@ impl UpstreamManager {
     }
 
     /// Back-compat: clone the socket only (cold path). Prefer `refresh_handles`.
-    pub fn clone_socket(&self) -> UdpSocket {
+    pub fn clone_socket(&self) -> Socket {
         self.sock
             .lock()
             .unwrap()

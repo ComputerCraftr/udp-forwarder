@@ -1,11 +1,10 @@
+use crate::stats::Stats;
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering as AtomOrdering};
 use std::time::{Duration, Instant};
-
-use crate::stats::Stats;
-
-use socket2::{Domain, Protocol, Socket, Type};
 
 #[inline]
 pub fn send_payload(
@@ -16,41 +15,42 @@ pub fn send_payload(
     max_payload: usize,
     stats: &Stats,
     last_seen: &AtomicU64,
-    sock: &UdpSocket,
+    sock: &Socket,
     buf: &[u8],
     len: usize,
     dest: SocketAddr,
 ) {
     let stats_drop_oversize = |c2u, stats: &Stats| {
         if c2u {
-            stats.drop_c2u_oversize();
+            stats.drop_c2u_oversize()
         } else {
-            stats.drop_u2c_oversize();
+            stats.drop_u2c_oversize()
         }
     };
 
     let stats_err = |c2u, stats: &Stats| {
         if c2u {
-            stats.c2u_err();
+            stats.c2u_err()
         } else {
-            stats.u2c_err();
+            stats.u2c_err()
         }
     };
 
     let payload_send =
-        |connected: bool, sock: &UdpSocket, buf: &[u8], len: usize, dest: SocketAddr| {
+        |connected: bool, sock: &Socket, buf: &[u8], len: usize, dest: SocketAddr| {
             if connected {
-                return sock.send(&buf[..len]);
+                sock.send(&buf[..len])
             } else {
-                return sock.send_to(&buf[..len], dest);
+                let saddr = SockAddr::from(dest);
+                sock.send_to(&buf[..len], &saddr)
             }
         };
 
     let stats_add = |c2u, stats: &Stats, len: usize, t_recv: Instant, t_send: Instant| {
         if c2u {
-            stats.add_c2u(len as u64, t_recv, t_send);
+            stats.add_c2u(len as u64, t_recv, t_send)
         } else {
-            stats.add_u2c(len as u64, t_recv, t_send);
+            stats.add_u2c(len as u64, t_recv, t_send)
         }
     };
 
@@ -77,27 +77,27 @@ pub fn make_udp_socket(
     bind_addr: SocketAddr,
     read_timeout_ms: u64,
     reuseaddr: bool,
-) -> io::Result<UdpSocket> {
+) -> io::Result<Socket> {
     let domain = match bind_addr {
         SocketAddr::V4(_) => Domain::IPV4,
         SocketAddr::V6(_) => Domain::IPV6,
     };
 
     // Construct a socket from scratch
-    let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    let udp_sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
 
     // Allow SO_REUSEADDR for multi-threading
     if reuseaddr {
-        sock.set_reuse_address(true)?;
+        udp_sock.set_reuse_address(true)?;
     }
 
     // Best-effort bigger buffers
-    sock.set_recv_buffer_size(1 << 20)?;
-    sock.set_send_buffer_size(1 << 20)?;
+    udp_sock.set_recv_buffer_size(1 << 20)?;
+    udp_sock.set_send_buffer_size(1 << 20)?;
 
-    // Convert into UdpSocket
-    sock.bind(&bind_addr.into())?;
-    let udp_sock: UdpSocket = sock.into();
+    // Bind the UDP Socket
+    let bind_sa = SockAddr::from(bind_addr);
+    udp_sock.bind(&bind_sa)?;
 
     // Set inactive timeout between upstream manager refreshes
     if read_timeout_ms == 0 {
@@ -108,22 +108,23 @@ pub fn make_udp_socket(
     Ok(udp_sock)
 }
 
-pub fn make_upstream_socket_for(dest: SocketAddr) -> io::Result<UdpSocket> {
+pub fn make_upstream_socket_for(dest: SocketAddr) -> io::Result<Socket> {
     let bind_addr = match dest {
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     };
 
     let sock = make_udp_socket(bind_addr, 5000, false)?;
-    sock.connect(dest)?;
+    let dest_sa = SockAddr::from(dest);
+    sock.connect(&dest_sa)?;
     Ok(sock)
 }
 
 pub fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {
-    !matches!(
-        (a, b),
-        (SocketAddr::V4(_), SocketAddr::V4(_)) | (SocketAddr::V6(_), SocketAddr::V6(_))
-    )
+    match (a, b) {
+        (SocketAddr::V4(_), SocketAddr::V4(_)) | (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
+        _ => true,
+    }
 }
 
 /// Disconnect a connected UDP socket so it returns to wildcard receive state.
@@ -132,7 +133,7 @@ pub fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {
 /// connecting to an invalid address (NULL or AF_UNSPEC). The error
 /// EAFNOSUPPORT may be harmlessly returned; consider it success.
 #[cfg(unix)]
-pub fn udp_disconnect(sock: &UdpSocket) -> io::Result<()> {
+pub fn udp_disconnect(sock: &Socket) -> io::Result<()> {
     use std::os::fd::AsRawFd;
     let fd = sock.as_raw_fd();
 
@@ -237,19 +238,20 @@ pub fn udp_disconnect(sock: &UdpSocket) -> io::Result<()> {
 
 /// Windows: disconnect a UDP socket by connecting to INADDR_ANY/IN6ADDR_ANY and port 0.
 #[cfg(windows)]
-pub fn udp_disconnect(sock: &UdpSocket) -> io::Result<()> {
+pub fn udp_disconnect(sock: &Socket) -> io::Result<()> {
     let local = sock.local_addr()?;
-    let any = match local {
-        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    let any_std = match local.as_socket() {
+        Some(SocketAddr::V6(_)) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
     };
     // Winsock treats connect(INADDR_ANY/IN6ADDR_ANY:0) as clearing the UDP peer
-    sock.connect(any)
+    let any = SockAddr::from(any_std);
+    sock.connect(&any)
 }
 
 /// Fallback: not supported on this platform.
 #[cfg(all(not(unix), not(windows)))]
-pub fn udp_disconnect(_sock: &UdpSocket) -> io::Result<()> {
+pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Other,
         "udp_disconnect is not supported on this OS",

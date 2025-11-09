@@ -5,21 +5,33 @@ mod upstream;
 
 use cli::{TimeoutAction, parse_args};
 use net::{make_udp_socket, resolve_first, send_payload, udp_disconnect};
+use socket2::Socket;
 use stats::Stats;
 use upstream::UpstreamManager;
 
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[inline]
+fn as_uninit_mut(buf: &mut [u8]) -> &mut [std::mem::MaybeUninit<u8>] {
+    // Safety: socket2::Socket::recv/recv_from promise not to write uninitialised bytes past what they return.
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            buf.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
+            buf.len(),
+        )
+    }
+}
+
 fn run_client_to_upstream_thread(
     t_start: Instant,
     cfg_listen_addr: SocketAddr,
     max_payload: usize,
-    client_sock: Arc<UdpSocket>,
+    client_sock: Arc<Socket>,
     client_peer: Arc<Mutex<Option<SocketAddr>>>,
     locked: Arc<AtomicBool>,
     last_seen_ns: Arc<AtomicU64>,
@@ -39,7 +51,7 @@ fn run_client_to_upstream_thread(
         }
         if local_unconnected_client.is_none() {
             // Connected fast path: only packets from the locked client are delivered
-            match client_sock.recv(&mut buf) {
+            match client_sock.recv(as_uninit_mut(&mut buf)) {
                 Ok(len) => {
                     let t_recv = Instant::now();
                     if locked.load(AtomOrdering::Relaxed) {
@@ -69,15 +81,22 @@ fn run_client_to_upstream_thread(
                 }
             }
         } else {
-            match client_sock.recv_from(&mut buf) {
-                Ok((len, src)) => {
+            match client_sock.recv_from(as_uninit_mut(&mut buf)) {
+                Ok((len, src_sa)) => {
                     let t_recv = Instant::now();
+                    let Some(src) = src_sa.as_socket() else {
+                        eprintln!(
+                            "recv_from client non-IP address family (ignored): {:?}",
+                            src_sa
+                        );
+                        continue;
+                    };
                     // First lock: publish client and connect the socket for fast path
                     if !locked.load(AtomOrdering::Relaxed) {
                         local_unconnected_client = Some(src);
                         *client_peer.lock().unwrap() = Some(src);
                         locked.store(true, AtomOrdering::Relaxed);
-                        if let Err(e) = client_sock.connect(src) {
+                        if let Err(e) = client_sock.connect(&src_sa) {
                             eprintln!("connect client_sock to {} failed: {}", src, e);
                         } else {
                             local_unconnected_client = None;
@@ -124,7 +143,7 @@ fn run_client_to_upstream_thread(
 fn run_upstream_to_client_thread(
     t_start: Instant,
     max_payload: usize,
-    client_sock: Arc<UdpSocket>,
+    client_sock: Arc<Socket>,
     client_peer: Arc<Mutex<Option<SocketAddr>>>,
     locked: Arc<AtomicBool>,
     last_seen_ns: Arc<AtomicU64>,
@@ -141,7 +160,7 @@ fn run_upstream_to_client_thread(
         if ver != upstream_mgr.version() {
             (up_sock, _, ver) = upstream_mgr.refresh_handles();
         }
-        match up_sock.recv(&mut buf) {
+        match up_sock.recv(as_uninit_mut(&mut buf)) {
             Ok(len) => {
                 let t_recv = Instant::now();
                 // Refresh local cached destination when global lock state changes
@@ -182,7 +201,7 @@ fn run_watchdog_thread(
     t_start: Instant,
     timeout_secs: u64,
     on_timeout: TimeoutAction,
-    client_sock: Arc<UdpSocket>,
+    client_sock: Arc<Socket>,
     client_peer: Arc<Mutex<Option<SocketAddr>>>,
     locked: Arc<AtomicBool>,
     last_seen_ns: Arc<AtomicU64>,
@@ -258,10 +277,14 @@ fn main() -> io::Result<()> {
         .expect("failed to set Ctrl-C handler");
     }
 
+    let local_bind = client_sock.local_addr()?;
+    let local_str = match local_bind.as_socket() {
+        Some(sa) => sa.to_string(),
+        None => format!("{:?}", local_bind),
+    };
     println!(
         "Listening on {}, forwarding to upstream {}. Waiting for first client...",
-        client_sock.local_addr()?,
-        initial_up
+        local_str, initial_up
     );
     println!(
         "Timeout: {}s, on-timeout: {:?}",
