@@ -1,3 +1,4 @@
+use crate::cli::{Config, SupportedProtocol};
 use crate::net::{family_changed, make_upstream_socket_for, resolve_first};
 use socket2::{SockAddr, Socket};
 
@@ -12,17 +13,19 @@ use std::time::Duration;
 pub struct UpstreamManager {
     current_addr: Arc<Mutex<SocketAddr>>, // cold-path updates only
     sock: Arc<Mutex<Socket>>,             // cold-path replacement only
+    sock_proto: SupportedProtocol,        // no replacement
     version: AtomicU64,                   // increments on any change
     periodic_started: AtomicBool,         // ensures spawn_periodic runs once
 }
 
 impl UpstreamManager {
-    pub fn new(initial_target: &str) -> io::Result<Self> {
+    pub fn new(initial_target: &str, initial_proto: SupportedProtocol) -> io::Result<Self> {
         let addr = resolve_first(initial_target)?;
-        let sock = make_upstream_socket_for(addr)?;
+        let sock = make_upstream_socket_for(addr, initial_proto)?;
         Ok(Self {
             current_addr: Arc::new(Mutex::new(addr)),
             sock: Arc::new(Mutex::new(sock)),
+            sock_proto: initial_proto,
             version: AtomicU64::new(0),
             periodic_started: AtomicBool::new(false),
         })
@@ -58,7 +61,7 @@ impl UpstreamManager {
         let ret_sock = if fam_flip {
             println!("{context}: upstream {fresh} (family changed; upstream socket swapped)");
             // Family changed: create a new **connected** upstream socket and swap it in.
-            let new_sock = make_upstream_socket_for(fresh)?; // already connected
+            let new_sock = make_upstream_socket_for(fresh, self.sock_proto)?; // already connected
             {
                 let mut guard = self.sock.lock().unwrap();
                 *guard = new_sock.try_clone()?;
@@ -89,13 +92,8 @@ impl UpstreamManager {
     }
 
     /// Optional periodic re-resolve while locked.
-    pub fn spawn_periodic(
-        self: &Arc<Self>,
-        target: String,
-        every_secs: u64,
-        locked: Arc<AtomicBool>,
-    ) -> bool {
-        if every_secs == 0 {
+    pub fn spawn_periodic(self: &Arc<Self>, cfg: Arc<Config>, locked: Arc<AtomicBool>) -> bool {
+        if cfg.reresolve_secs == 0 {
             return false;
         }
         // Single-init gate like stats thread: only allow one periodic worker.
@@ -108,13 +106,13 @@ impl UpstreamManager {
         }
         let mgr = Arc::clone(self);
         thread::spawn(move || {
-            let period = Duration::from_secs(every_secs);
+            let period = Duration::from_secs(cfg.reresolve_secs);
             loop {
                 thread::sleep(period);
                 if !locked.load(AtomOrdering::Relaxed) {
                     continue;
                 }
-                let _ = mgr.apply_fresh(&target, "Periodic re-resolve");
+                let _ = mgr.apply_fresh(&cfg.upstream_addr, "Periodic re-resolve");
             }
         });
         true

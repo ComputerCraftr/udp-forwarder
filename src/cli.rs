@@ -2,6 +2,12 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::{env, process};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupportedProtocol {
+    UDP,
+    ICMP,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeoutAction {
     Drop,
     Exit,
@@ -10,12 +16,14 @@ pub enum TimeoutAction {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub listen_addr: SocketAddr,
-    pub upstream_target: String,   // FQDN:port or IP:port
-    pub timeout_secs: u64,         // idle timeout for single client
-    pub on_timeout: TimeoutAction, // drop | exit
-    pub stats_interval_mins: u32,  // JSON stats print interval
-    pub max_payload: usize,        // optional user-specified MTU/payload limit
-    pub reresolve_secs: u64,       // 0 = disabled
+    pub listen_proto: SupportedProtocol,   // UDP | ICMP
+    pub upstream_addr: String,             // FQDN:port or IP:port
+    pub upstream_proto: SupportedProtocol, // UDP | ICMP
+    pub timeout_secs: u64,                 // idle timeout for single client
+    pub on_timeout: TimeoutAction,         // Drop | Exit
+    pub stats_interval_mins: u32,          // JSON stats print interval
+    pub max_payload: usize,                // optional user-specified MTU/payload limit
+    pub reresolve_secs: u64,               // 0 = disabled
 }
 
 pub fn parse_args() -> Config {
@@ -23,7 +31,7 @@ pub fn parse_args() -> Config {
     fn print_usage_and_exit(code: i32) -> ! {
         let prog = env::args().next().unwrap_or_else(|| "pkthere".into());
         eprintln!(
-            "Usage: {prog} --here <listen_ip:port> --there <upstream_host_or_ip:port>\n\
+            "Usage: {prog} --here <protocol:listen_ip:port> --there <protocol:upstream_host_or_ip:port>\n\
              \n\
              Options:\n\
              \t--timeout-secs N         Idle timeout for the single client (default: 10)\n\
@@ -34,6 +42,18 @@ pub fn parse_args() -> Config {
              \t-h, --help               Show this help and exit"
         );
         process::exit(code)
+    }
+
+    // Split "UDP:host:port" / "ICMP:host:port" into (proto, "host:port")
+    fn split_proto<'a>(s: &'a str, flag: &str) -> (SupportedProtocol, &'a str) {
+        if let Some(rest) = s.strip_prefix("UDP:") {
+            (SupportedProtocol::UDP, rest)
+        } else if let Some(rest) = s.strip_prefix("ICMP:") {
+            (SupportedProtocol::ICMP, rest)
+        } else {
+            eprintln!("{flag} must be UDP:<ip>:<port> or ICMP:<ip>:<port> (got '{s}')");
+            print_usage_and_exit(2)
+        }
     }
 
     // Generic number parser with good errors.
@@ -49,23 +69,28 @@ pub fn parse_args() -> Config {
     }
 
     // Address helpers.
-    fn parse_listen(s: &str) -> SocketAddr {
-        match s.to_socket_addrs() {
-            Ok(mut it) => it.next().unwrap_or_else(|| {
-                eprintln!("--here: no address resolved from '{s}'");
-                print_usage_and_exit(2)
-            }),
+    fn parse_here(s: &str) -> (SupportedProtocol, SocketAddr) {
+        let (proto, addr_str) = split_proto(s, "--here");
+        match addr_str.to_socket_addrs() {
+            Ok(mut it) => {
+                let sa = it.next().unwrap_or_else(|| {
+                    eprintln!("--here: no address resolved from '{s}'");
+                    print_usage_and_exit(2)
+                });
+                (proto, sa)
+            }
             Err(e) => {
                 eprintln!("--here: failed to parse '{s}': {e}");
                 print_usage_and_exit(2)
             }
         }
     }
-    fn validate_there(s: &str) -> String {
-        match s.to_socket_addrs() {
+    fn validate_there(s: &str) -> (SupportedProtocol, String) {
+        let (proto, addr_str) = split_proto(s, "--there");
+        match addr_str.to_socket_addrs() {
             Ok(mut it) => {
                 if it.next().is_some() {
-                    s.to_string()
+                    (proto, addr_str.to_string())
                 } else {
                     eprintln!("--there: must be a resolvable host:port or ip:port (got '{s}')");
                     print_usage_and_exit(2)
@@ -90,8 +115,8 @@ pub fn parse_args() -> Config {
     }
 
     // Required
-    let mut listen_addr_opt: Option<SocketAddr> = None;
-    let mut upstream_target_opt: Option<String> = None;
+    let mut listen_opt: Option<(SupportedProtocol, SocketAddr)> = None;
+    let mut upstream_opt: Option<(SupportedProtocol, String)> = None;
 
     // Optional defaults
     let mut timeout_secs: u64 = 10;
@@ -106,11 +131,11 @@ pub fn parse_args() -> Config {
         match arg.as_str() {
             "--here" => {
                 let val = get_next_value(&mut args_iter, "--here");
-                listen_addr_opt = Some(parse_listen(&val));
+                listen_opt = Some(parse_here(&val));
             }
             "--there" => {
                 let val = get_next_value(&mut args_iter, "--there");
-                upstream_target_opt = Some(validate_there(&val));
+                upstream_opt = Some(validate_there(&val));
             }
             "--timeout-secs" => {
                 let val = get_next_value(&mut args_iter, "--timeout-secs");
@@ -147,24 +172,26 @@ pub fn parse_args() -> Config {
         }
     }
 
-    let listen_addr = match listen_addr_opt {
-        Some(a) => a,
+    let (listen_proto, listen_addr) = match listen_opt {
+        Some(t) => t,
         None => {
-            eprintln!("missing required flag: --here <listen_ip:port>");
+            eprintln!("missing required flag: --here <protocol:listen_ip:port>");
             print_usage_and_exit(2)
         }
     };
-    let upstream_target = match upstream_target_opt {
-        Some(s) => s,
+    let (upstream_proto, upstream_addr) = match upstream_opt {
+        Some(t) => t,
         None => {
-            eprintln!("missing required flag: --there <upstream_host_or_ip:port>");
+            eprintln!("missing required flag: --there <protocol:upstream_host_or_ip:port>");
             print_usage_and_exit(2)
         }
     };
 
     Config {
         listen_addr,
-        upstream_target,
+        listen_proto,
+        upstream_addr,
+        upstream_proto,
         timeout_secs,
         on_timeout,
         stats_interval_mins,
