@@ -9,77 +9,81 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomOrdering};
 use std::time::{Duration, Instant};
 
-#[inline]
-fn strip_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], bool)> {
-    // Some OSes (notably Linux for IPv4 raw sockets) deliver the full IP header
-    // followed by the ICMP message. Others deliver only the ICMP message.
-    // We normalize by skipping an IP header if present, validate it's ICMP(v6),
-    // then verify Echo type/code and strip the 8-byte ICMP Echo header.
+/// Create a UDP socket bound to `bind_addr`.
+pub fn make_udp_socket(
+    bind_addr: SocketAddr,
+    read_timeout_ms: u64,
+    reuseaddr: bool,
+) -> io::Result<Socket> {
+    let domain = match bind_addr {
+        SocketAddr::V4(_) => Domain::IPV4,
+        SocketAddr::V6(_) => Domain::IPV6,
+    };
 
-    if buf.len() < 8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ICMP frame too short",
-        ));
+    // Construct a socket from scratch
+    let udp_sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+
+    // Allow SO_REUSEADDR for multi-threading
+    if reuseaddr {
+        udp_sock.set_reuse_address(true)?;
     }
 
-    let mut off = 0usize;
+    // Best-effort bigger buffers
+    udp_sock.set_recv_buffer_size(1 << 20)?;
+    udp_sock.set_send_buffer_size(1 << 20)?;
 
-    // Detect IPv4 header (version 4 in high nibble). If present, skip it.
-    let v = buf[0] >> 4;
-    if v == 4 {
-        if buf.len() < 20 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "IPv4 header too short",
-            ));
-        }
-        let ihl = ((buf[0] & 0x0F) as usize) * 4; // IHL in 32-bit words
-        if ihl < 20 || buf.len() < ihl + 8 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid IPv4 IHL or short frame",
-            ));
-        }
-        // IPv4 protocol field must be ICMP (1)
-        if buf[9] != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "IPv4 next protocol is not ICMP",
-            ));
-        }
-        off = ihl;
-    } else if v == 6 {
-        // Some stacks may include the IPv6 header; many deliver only the ICMPv6 msg.
-        // If an IPv6 header seems present (version 6 and length >= 40), and Next Header is 58 (ICMPv6), skip 40.
-        if buf.len() >= 40 {
-            let next_header = buf[6]; // IPv6 Next Header
-            if next_header == 58 {
-                off = 40;
-            }
-        }
-        if buf.len() < off + 8 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Short ICMPv6 frame",
-            ));
-        }
-    }
-    // Else no IP header; assume buf starts at ICMP header.
+    // Bind the UDP Socket
+    let bind_sa = SockAddr::from(bind_addr);
+    udp_sock.bind(&bind_sa)?;
 
-    // Validate ICMP/ICMPv6 Echo [request/reply] and strip 8-byte header.
-    // ICMPv4 Echo: type=8 (req) / 0 (reply), code=0
-    // ICMPv6 Echo: type=128 (req) / 129 (reply), code=0
-    let t = buf[off];
-    let c = buf[off + 1];
-    if c != 0 || !matches!(t, 8 | 0 | 128 | 129) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Unexpected ICMP type/code: {t}/{c}"),
-        ));
+    // Set inactive timeout between upstream manager refreshes
+    udp_sock.set_read_timeout(if read_timeout_ms == 0 {
+        None // block forever
+    } else {
+        Some(Duration::from_millis(read_timeout_ms))
+    })?;
+
+    Ok(udp_sock)
+}
+
+/// Create a raw ICMP socket bound to `bind_addr`.
+/// NOTE: Raw sockets typically require CAP_NET_RAW (Linux) or root (BSD/macOS).
+pub fn make_icmp_socket(
+    bind_addr: SocketAddr,
+    read_timeout_ms: u64,
+    reuseaddr: bool,
+) -> io::Result<Socket> {
+    // Use well-known protocol numbers to stay cross-platform (no libc on Windows)
+    // IPv4: IPPROTO_ICMP = 1, IPv6: IPPROTO_ICMPV6 = 58
+    let (domain, proto) = match bind_addr {
+        SocketAddr::V4(_) => (Domain::IPV4, Protocol::from(1)), // ICMPv4
+        SocketAddr::V6(_) => (Domain::IPV6, Protocol::from(58)), // ICMPv6
+    };
+
+    // Construct a raw socket
+    let icmp_sock = Socket::new(domain, Type::from(3), Some(proto))?; // SOCK_RAW = 3 (POSIX & Winsock)
+
+    // Allow SO_REUSEADDR for multi-threading
+    if reuseaddr {
+        icmp_sock.set_reuse_address(true)?;
     }
-    let is_request = matches!(t, 8 | 128);
-    Ok((&buf[off + 8..], is_request))
+
+    // Best-effort bigger buffers
+    icmp_sock.set_recv_buffer_size(1 << 20)?;
+    icmp_sock.set_send_buffer_size(1 << 20)?;
+
+    // Bind the ICMP Socket
+    let bind_sa = SockAddr::from(bind_addr);
+    icmp_sock.bind(&bind_sa)?;
+
+    // Set inactive timeout
+    icmp_sock.set_read_timeout(if read_timeout_ms == 0 {
+        None // block forever
+    } else {
+        Some(Duration::from_millis(read_timeout_ms))
+    })?;
+
+    Ok(icmp_sock)
 }
 
 #[inline]
@@ -190,105 +194,77 @@ pub fn send_payload(
     }
 }
 
-pub fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
-    let mut iter = addr.to_socket_addrs()?;
-    iter.next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No address resolved"))
-}
+#[inline]
+fn strip_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], bool)> {
+    // Some OSes (notably Linux for IPv4 raw sockets) deliver the full IP header
+    // followed by the ICMP message. Others deliver only the ICMP message.
+    // We normalize by skipping an IP header if present, validate it's ICMP(v6),
+    // then verify Echo type/code and strip the 8-byte ICMP Echo header.
 
-/// Create a UDP socket bound to `bind_addr`.
-pub fn make_udp_socket(
-    bind_addr: SocketAddr,
-    read_timeout_ms: u64,
-    reuseaddr: bool,
-) -> io::Result<Socket> {
-    let domain = match bind_addr {
-        SocketAddr::V4(_) => Domain::IPV4,
-        SocketAddr::V6(_) => Domain::IPV6,
-    };
-
-    // Construct a socket from scratch
-    let udp_sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-
-    // Allow SO_REUSEADDR for multi-threading
-    if reuseaddr {
-        udp_sock.set_reuse_address(true)?;
+    if buf.len() < 8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ICMP frame too short",
+        ));
     }
 
-    // Best-effort bigger buffers
-    udp_sock.set_recv_buffer_size(1 << 20)?;
-    udp_sock.set_send_buffer_size(1 << 20)?;
+    let mut off = 0usize;
 
-    // Bind the UDP Socket
-    let bind_sa = SockAddr::from(bind_addr);
-    udp_sock.bind(&bind_sa)?;
-
-    // Set inactive timeout between upstream manager refreshes
-    udp_sock.set_read_timeout(if read_timeout_ms == 0 {
-        None // block forever
-    } else {
-        Some(Duration::from_millis(read_timeout_ms))
-    })?;
-
-    Ok(udp_sock)
-}
-
-/// Create and connect a socket suitable for forwarding data to `dest`.
-pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> io::Result<Socket> {
-    let bind_addr = match dest {
-        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-    };
-
-    let sock = match proto {
-        SupportedProtocol::ICMP => make_icmp_socket(bind_addr, 5000, false)?,
-        _ => make_udp_socket(bind_addr, 5000, false)?,
-    };
-
-    let dest_sa = SockAddr::from(dest);
-    sock.connect(&dest_sa)?;
-
-    Ok(sock)
-}
-
-/// Create a raw ICMP socket bound to `bind_addr`.
-/// NOTE: Raw sockets typically require CAP_NET_RAW (Linux) or root (BSD/macOS).
-pub fn make_icmp_socket(
-    bind_addr: SocketAddr,
-    read_timeout_ms: u64,
-    reuseaddr: bool,
-) -> io::Result<Socket> {
-    // Use well-known protocol numbers to stay cross-platform (no libc on Windows)
-    // IPv4: IPPROTO_ICMP = 1, IPv6: IPPROTO_ICMPV6 = 58
-    let (domain, proto) = match bind_addr {
-        SocketAddr::V4(_) => (Domain::IPV4, Protocol::from(1)), // ICMPv4
-        SocketAddr::V6(_) => (Domain::IPV6, Protocol::from(58)), // ICMPv6
-    };
-
-    // Construct a raw socket
-    let icmp_sock = Socket::new(domain, Type::from(3), Some(proto))?; // SOCK_RAW = 3 (POSIX & Winsock)
-
-    // Allow SO_REUSEADDR for multi-threading
-    if reuseaddr {
-        icmp_sock.set_reuse_address(true)?;
+    // Detect IPv4 header (version 4 in high nibble). If present, skip it.
+    let v = buf[0] >> 4;
+    if v == 4 {
+        if buf.len() < 20 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IPv4 header too short",
+            ));
+        }
+        let ihl = ((buf[0] & 0x0F) as usize) * 4; // IHL in 32-bit words
+        if ihl < 20 || buf.len() < ihl + 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid IPv4 IHL or short frame",
+            ));
+        }
+        // IPv4 protocol field must be ICMP (1)
+        if buf[9] != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IPv4 next protocol is not ICMP",
+            ));
+        }
+        off = ihl;
+    } else if v == 6 {
+        // Some stacks may include the IPv6 header; many deliver only the ICMPv6 msg.
+        // If an IPv6 header seems present (version 6 and length >= 40), and Next Header is 58 (ICMPv6), skip 40.
+        if buf.len() >= 40 {
+            let next_header = buf[6]; // IPv6 Next Header
+            if next_header == 58 {
+                off = 40;
+            }
+        }
+        if buf.len() < off + 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Short ICMPv6 frame",
+            ));
+        }
     }
+    // Else no IP header; assume buf starts at ICMP header.
 
-    // Best-effort bigger buffers
-    icmp_sock.set_recv_buffer_size(1 << 20)?;
-    icmp_sock.set_send_buffer_size(1 << 20)?;
-
-    // Bind the ICMP Socket
-    let bind_sa = SockAddr::from(bind_addr);
-    icmp_sock.bind(&bind_sa)?;
-
-    // Set inactive timeout
-    icmp_sock.set_read_timeout(if read_timeout_ms == 0 {
-        None // block forever
-    } else {
-        Some(Duration::from_millis(read_timeout_ms))
-    })?;
-
-    Ok(icmp_sock)
+    // Validate ICMP/ICMPv6 Echo [request/reply] and strip 8-byte header.
+    // ICMPv4 Echo: type=8 (req) / 0 (reply), code=0
+    // ICMPv6 Echo: type=128 (req) / 129 (reply), code=0
+    let t = buf[off];
+    let c = buf[off + 1];
+    if c != 0 || !matches!(t, 8 | 0 | 128 | 129) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Unexpected ICMP type/code: {t}/{c}"),
+        ));
+    }
+    let is_request = matches!(t, 8 | 128);
+    Ok((&buf[off + 8..], is_request))
 }
 
 /// Send an ICMP Echo Request or Reply (IPv4 or IPv6).
@@ -342,6 +318,32 @@ pub fn send_icmp_echo(
     }
 }
 
+/// Create and connect a socket suitable for forwarding data to `dest`.
+pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> io::Result<Socket> {
+    let bind_addr = match dest {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    };
+
+    let sock = match proto {
+        SupportedProtocol::ICMP => make_icmp_socket(bind_addr, 5000, false)?,
+        _ => make_udp_socket(bind_addr, 5000, false)?,
+    };
+
+    let dest_sa = SockAddr::from(dest);
+    sock.connect(&dest_sa)?;
+
+    Ok(sock)
+}
+
+#[inline]
+pub fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
+    let mut iter = addr.to_socket_addrs()?;
+    iter.next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No address resolved"))
+}
+
+#[inline]
 pub fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {
     match (a, b) {
         (SocketAddr::V4(_), SocketAddr::V4(_)) | (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
@@ -480,6 +482,7 @@ pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
 }
 
 /// Compute the Internet Checksum (RFC 1071) for ICMPv4 header+payload.
+#[inline]
 fn checksum16(mut data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     // Sum 16-bit words

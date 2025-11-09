@@ -1,4 +1,6 @@
+use crate::upstream::UpstreamManager;
 use serde_json::json;
+
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process;
@@ -7,8 +9,6 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-
-use crate::upstream::UpstreamManager;
 
 enum StatEvent {
     C2U { bytes: u64, lat_ns: u64 },
@@ -56,28 +56,35 @@ impl Stats {
         })
     }
 
+    #[inline]
     pub fn dur_ns(start: Instant, end: Instant) -> u64 {
         let d = end.duration_since(start);
         d.as_nanos().min(u128::from(u64::MAX)) as u64
     }
 
+    #[inline]
     pub fn add_c2u(&self, bytes: u64, start: Instant, end: Instant) {
         let lat_ns = Self::dur_ns(start, end);
         let _ = self.tx.try_send(StatEvent::C2U { bytes, lat_ns });
     }
+    #[inline]
     pub fn c2u_err(&self) {
         let _ = self.tx.try_send(StatEvent::C2UErr);
     }
+    #[inline]
     pub fn add_u2c(&self, bytes: u64, start: Instant, end: Instant) {
         let lat_ns = Self::dur_ns(start, end);
         let _ = self.tx.try_send(StatEvent::U2C { bytes, lat_ns });
     }
+    #[inline]
     pub fn u2c_err(&self) {
         let _ = self.tx.try_send(StatEvent::U2CErr);
     }
+    #[inline]
     pub fn drop_c2u_oversize(&self) {
         let _ = self.tx.try_send(StatEvent::DropC2UOver);
     }
+    #[inline]
     pub fn drop_u2c_oversize(&self) {
         let _ = self.tx.try_send(StatEvent::DropU2COver);
     }
@@ -94,6 +101,7 @@ impl Stats {
     }
 
     // --- Private helpers (keep thread body minimal) ------------------------
+    #[inline]
     fn ewma_update(cur: &mut Option<f64>, sample_ns: u64) {
         // Compute alpha once lazily.
         static EWMA_ALPHA: OnceLock<f64> = OnceLock::new();
@@ -109,6 +117,7 @@ impl Stats {
         }
     }
 
+    #[inline]
     fn handle_event(a: &mut Agg, ev: StatEvent) {
         match ev {
             StatEvent::C2U { bytes, lat_ns } => {
@@ -150,6 +159,7 @@ impl Stats {
         }
     }
 
+    #[inline]
     fn safe_println(s: &str) {
         let mut out = std::io::stdout();
         let _ = out.write_all(s.as_bytes());
@@ -157,6 +167,7 @@ impl Stats {
         let _ = out.flush();
     }
 
+    #[inline]
     fn print_snapshot(
         &self,
         a: &Agg,
