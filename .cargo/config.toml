@@ -1,21 +1,28 @@
+# Build both standard musl triples (valid for Alpine and other musl distros)
+[build]
+# Uncomment if you want `cargo build --release` to build both by default
+# target = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+
+# Apply to any musl target (covers x86_64-unknown-linux-musl and aarch64-unknown-linux-musl)
 [target.'cfg(target_env="musl")']
 linker = "clang"
 rustflags = [
+# CPU & codegen
 "-C","target-cpu=native",
 "-C","relocation-model=pic",
+# Fully static libc on musl
 "-C","target-feature=+crt-static",
+# Use lld and produce a static PIE (safer static; required by some distros)
 "-C","link-arg=-fuse-ld=lld",
 "-C","link-arg=-static-pie",
+# Unwind tables for backtraces
 "-C","link-arg=-Wl,--eh-frame-hdr",
 
-# force static archives; order matters
-"-C","link-arg=-Wl,-Bstatic",
-"-C","link-arg=-Wl,--start-group",
+# Prefer static unwind libs for musl
 "-C","link-arg=-lunwind",
 "-C","link-arg=-lgcc_eh",
-"-C","link-arg=-Wl,--end-group",
 ]
 
+# Explicit sections kept minimal; the musl cfg above handles both triples.
 [target.x86_64-unknown-linux-musl]
 [target.aarch64-unknown-linux-musl]
-[target.aarch64-alpine-linux-musl]
