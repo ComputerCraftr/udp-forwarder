@@ -64,6 +64,7 @@ fn run_client_to_upstream_thread(
                             &up_sock,
                             &buf[..len],
                             dest,
+                            cfg.listen_addr,
                             false,
                         );
                     } else {
@@ -122,6 +123,7 @@ fn run_client_to_upstream_thread(
                             &up_sock,
                             &buf[..len],
                             dest,
+                            cfg.listen_addr,
                             false,
                         );
                     }
@@ -150,13 +152,13 @@ fn run_upstream_to_client_thread(
 ) {
     let mut buf = vec![0u8; 65535];
     // Cache upstream socket and destination; refresh only when version changes
-    let (mut up_sock, _, mut ver) = upstream_mgr.refresh_handles();
+    let (mut up_sock, mut up_sock_addr, mut ver) = upstream_mgr.refresh_handles();
     // Local cache of the locked client destination for fast send
     let mut local_dest: Option<SocketAddr> = None;
     loop {
         // Cheap hot-path check: refresh local handles only when version changes
         if ver != upstream_mgr.version() {
-            (up_sock, _, ver) = upstream_mgr.refresh_handles();
+            (up_sock, up_sock_addr, ver) = upstream_mgr.refresh_handles();
         }
         match up_sock.recv(as_uninit_mut(&mut buf)) {
             Ok(len) => {
@@ -180,6 +182,7 @@ fn run_upstream_to_client_thread(
                         client_sock,
                         &buf[..len],
                         dest,
+                        up_sock_addr,
                         false,
                     );
                 }

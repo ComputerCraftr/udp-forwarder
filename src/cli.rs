@@ -31,7 +31,7 @@ pub fn parse_args() -> Config {
     fn print_usage_and_exit(code: i32) -> ! {
         let prog = env::args().next().unwrap_or_else(|| "pkthere".into());
         eprintln!(
-            "Usage: {prog} --here <protocol:listen_ip:port> --there <protocol:upstream_host_or_ip:port>\n\
+            "Usage: {prog} --here <protocol:listen_ip:port_id> --there <protocol:upstream_host_or_ip:port_id>\n\
              \n\
              Options:\n\
              \t--timeout-secs N         Idle timeout for the single client (default: 10)\n\
@@ -44,14 +44,14 @@ pub fn parse_args() -> Config {
         process::exit(code)
     }
 
-    // Split "UDP:host:port" / "ICMP:host:port" into (proto, "host:port")
+    // Split "UDP:host:port" / "ICMP:host:id" into (proto, "host:port")
     fn split_proto<'a>(s: &'a str, flag: &str) -> (SupportedProtocol, &'a str) {
         if let Some(rest) = s.strip_prefix("UDP:") {
             (SupportedProtocol::UDP, rest)
         } else if let Some(rest) = s.strip_prefix("ICMP:") {
             (SupportedProtocol::ICMP, rest)
         } else {
-            eprintln!("{flag} must be UDP:<ip>:<port> or ICMP:<ip>:<port> (got '{s}')");
+            eprintln!("{flag} must be UDP:<ip>:<port> or ICMP:<ip>:<id> (got '{s}')");
             print_usage_and_exit(2)
         }
     }

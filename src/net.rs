@@ -98,6 +98,7 @@ pub fn send_payload(
     sock: &Socket,
     buf: &[u8],
     dest: SocketAddr,
+    recv: SocketAddr,
     debug: bool,
 ) {
     // Direction-local helpers
@@ -131,9 +132,9 @@ pub fn send_payload(
     };
 
     // If the source side was ICMP, strip the 8-byte Echo header before forwarding.
-    let (payload, src_is_req) = if matches!(src_proto, SupportedProtocol::ICMP) {
-        match strip_icmp_echo_header(buf) {
-            Ok((p, is_req)) => (p, is_req),
+    let (payload, src_ident, src_is_req) = if matches!(src_proto, SupportedProtocol::ICMP) {
+        match parse_icmp_echo_header(buf) {
+            Ok((p, ident, is_req)) => (p, ident, is_req),
             Err(e) => {
                 if debug {
                     eprintln!("Dropping packet: Invalid ICMP echo frame ({e})");
@@ -143,11 +144,14 @@ pub fn send_payload(
             }
         }
     } else {
-        (buf, true)
+        (buf, recv.port(), true)
     };
     // If this is the client->upstream direction and we received an ICMP Echo *reply*,
     // drop it to avoid feedback loops (we only forward client requests upstream).
-    if c2u && matches!(src_proto, SupportedProtocol::ICMP) && !src_is_req {
+    // Also, ignore all packets with the wrong identity field.
+    if (c2u && matches!(src_proto, SupportedProtocol::ICMP) && !src_is_req)
+        || (src_ident != recv.port())
+    {
         // Not an error; just ignore replies from the client side.
         return;
     }
@@ -168,8 +172,8 @@ pub fn send_payload(
     // Send according to destination protocol and connection state.
     let send_res = match dst_proto {
         SupportedProtocol::ICMP => {
-            let opt_dest = if connected { None } else { Some(dest) };
-            send_icmp_echo(sock, opt_dest, !c2u, payload)
+            let dest_opt = if connected { None } else { Some(dest) };
+            send_icmp_echo(sock, dest_opt, dest.port(), !c2u, payload)
         }
         _ => {
             if connected {
@@ -188,14 +192,16 @@ pub fn send_payload(
             stats_add(c2u, stats, len, t_recv, t_send);
         }
         Err(e) => {
-            eprintln!("Send to '{}' error: {}", dest, e);
+            if debug {
+                eprintln!("Send to '{}' error: {}", dest, e);
+            }
             stats_err(c2u, stats);
         }
     }
 }
 
 #[inline]
-fn strip_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], bool)> {
+fn parse_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], u16, bool)> {
     // Some OSes (notably Linux for IPv4 raw sockets) deliver the full IP header
     // followed by the ICMP message. Others deliver only the ICMP message.
     // We normalize by skipping an IP header if present, validate it's ICMP(v6),
@@ -263,23 +269,24 @@ fn strip_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], bool)> {
             format!("Unexpected ICMP type/code: {t}/{c}"),
         ));
     }
+    // Identifier is bytes 4..6 of the ICMP Echo header (for both v4 and v6 Echo).
+    let ident = u16::from_be_bytes([buf[off + 4], buf[off + 5]]);
     let is_request = matches!(t, 8 | 128);
-    Ok((&buf[off + 8..], is_request))
+    Ok((&buf[off + 8..], ident, is_request))
 }
 
 /// Send an ICMP Echo Request or Reply (IPv4 or IPv6).
 /// If the socket is connected, pass `dest = None`. Otherwise, provide `Some(dest)`.
-pub fn send_icmp_echo(
+fn send_icmp_echo(
     sock: &Socket,
-    dest: Option<SocketAddr>,
+    dest_opt: Option<SocketAddr>,
+    ident: u16,
     reply: bool,
     payload: &[u8],
 ) -> io::Result<usize> {
-    const ICMP_IDENT: u16 = 5;
     static ICMP_SEQ: AtomicU16 = AtomicU16::new(1);
 
     let mut buf: Vec<u8> = Vec::with_capacity(8 + payload.len());
-    let ident = ICMP_IDENT;
     let seq = ICMP_SEQ.fetch_add(1, AtomOrdering::Relaxed);
 
     match sock.local_addr()?.as_socket() {
@@ -310,8 +317,8 @@ pub fn send_icmp_echo(
         }
     }
 
-    if let Some(dest_addr) = dest {
-        let dest_sa = SockAddr::from(dest_addr);
+    if let Some(dest) = dest_opt {
+        let dest_sa = SockAddr::from(dest);
         sock.send_to(&buf, &dest_sa)
     } else {
         sock.send(&buf)
