@@ -146,12 +146,23 @@ impl Stats {
             return sample_avg_ns;
         }
         let k = sample_count as f64;
-        let beta_k = (EWMA_LN_BETA * k).exp(); // (1 - alpha)^k where ln(beta) is const
-        let newf = beta_k * (prev_ns as f64) + (1.0 - beta_k) * (sample_avg_ns as f64);
-        if newf.is_sign_negative() {
-            0
+        let x = EWMA_LN_BETA * k; // x is small negative when k is small
+        let one_minus_beta_k = -x.exp_m1(); // exact: 1 - exp(x)
+        let beta_k = 1.0 - one_minus_beta_k; // exp(x)
+
+        let prev_f = prev_ns as f64;
+        let samp_f = sample_avg_ns as f64;
+        let newf = beta_k * prev_f + one_minus_beta_k * samp_f;
+
+        if !newf.is_finite() {
+            return 0; // guard against NaN/Inf
+        }
+        // Round to nearest to avoid truncation bias, and saturate on overflow.
+        let r = newf.max(0.0).round(); // avoid negatives / -0.0
+        if r >= (u64::MAX as f64) {
+            u64::MAX
         } else {
-            newf as u64
+            r as u64
         }
     }
 
@@ -304,6 +315,11 @@ impl Stats {
         }
         let _ = stats.start.set(Instant::now());
         thread::spawn(move || {
+            // Cadences:
+            //  - MAINT_TICK: short cadence (EWMA refresh + shutdown check)
+            //  - PRINT_PERIOD: long cadence (JSON printing)
+            const MAINT_TICK_MS: u64 = 250;
+
             // initialize prev snapshot
             let (
                 mut ew_prev_c2u_pkts,
@@ -324,8 +340,8 @@ impl Stats {
                 _,
             ) = stats.load_snapshot();
 
-            let period = Duration::from_secs(every);
-            let mut next_tick = Instant::now() + period;
+            let print_period = Duration::from_secs(every);
+            let mut next_print_at = Instant::now() + print_period;
             loop {
                 // Take one snapshot per tick for both EWMA update and (maybe) printing
                 let (
@@ -376,16 +392,16 @@ impl Stats {
 
                 // Print only on schedule
                 let now = Instant::now();
-                if now >= next_tick {
+                if now >= next_print_at {
                     stats.print_snapshot(&client_peer, &upstream_mgr);
-                    // advance tick
-                    let elapsed = now.duration_since(next_tick).as_secs();
+                    // Advance the next print boundary, accounting for any missed periods
+                    let elapsed = now.duration_since(next_print_at).as_secs();
                     let skipped = (elapsed / every) + 1; // at least one boundary
-                    next_tick += Duration::from_secs(skipped * every);
+                    next_print_at += Duration::from_secs(skipped * every);
                 }
 
-                // Tick interval for EWMA updates and schedule checking
-                thread::sleep(Duration::from_millis(250));
+                // Maintenance tick: EWMA update + shutdown check cadence
+                thread::sleep(Duration::from_millis(MAINT_TICK_MS));
             }
         });
         true
