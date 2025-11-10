@@ -9,16 +9,15 @@ use std::time::{Duration, Instant};
 #[test]
 #[ignore] // opt-in: `cargo test --test stress -- --ignored --nocapture`
 fn stress_one_minute_ipv4() {
-    // Upstream echo server
-    let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
-
     // Client socket bound to ephemeral local port
-    let client_sock = bind_udp_v4_client();
+    let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
+
+    // Upstream echo server
+    let (up_addr, _up_thread) =
+        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
 
     // Spawn the app binary
-    let bin_opt = find_app_bin();
-    assert!(bin_opt.is_some(), "could not find app binary");
-    let bin = bin_opt.unwrap();
+    let bin = find_app_bin().expect("could not find app binary");
 
     // Run with small timeout & auto-exit on idle
     let mut child = ChildGuard::new(
@@ -40,18 +39,13 @@ fn stress_one_minute_ipv4() {
     );
 
     // Read the forwarder's listen address and connect the client
-    let out_opt = take_child_stdout(&mut child);
-    assert!(out_opt.is_some(), "child stdout missing");
-    let mut out = out_opt.unwrap();
+    let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
     let max_wait = Duration::from_secs(2);
-    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
-    assert!(
-        listen_addr_opt.is_some(),
+    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
-    );
-    let listen_addr = listen_addr_opt.unwrap();
+    ));
     client_sock
         .connect(listen_addr)
         .expect("connect to forwarder (IPv4)");
@@ -110,13 +104,10 @@ fn stress_one_minute_ipv4() {
 
     // Sanity check via stats snapshot
     let json_wait = Duration::from_millis(50);
-    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
-    assert!(
-        stats_opt.is_some(),
+    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
         "did not see stats JSON line within {:?}",
         json_wait
-    );
-    let stats = stats_opt.unwrap();
+    ));
     let c2u_pkts = stats["c2u_pkts"].as_u64().unwrap();
     let u2c_pkts = stats["u2c_pkts"].as_u64().unwrap();
     let c2u_bytes = stats["c2u_bytes"].as_u64().unwrap();

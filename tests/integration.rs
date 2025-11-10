@@ -9,16 +9,15 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn enforce_max_payload_ipv4() {
-    // Upstream echo server
-    let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
-
     // Client socket bound to ephemeral local port
-    let client_sock = bind_udp_v4_client();
+    let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
+
+    // Upstream echo server
+    let (up_addr, _up_thread) =
+        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
 
     // Spawn the app binary
-    let bin_opt = find_app_bin();
-    assert!(bin_opt.is_some(), "could not find app binary");
-    let bin = bin_opt.unwrap();
+    let bin = find_app_bin().expect("could not find app binary");
 
     let mut child = ChildGuard::new(
         Command::new(bin)
@@ -41,18 +40,13 @@ fn enforce_max_payload_ipv4() {
     );
 
     // Read the forwarder's listen address and connect the client
-    let out_opt = take_child_stdout(&mut child);
-    assert!(out_opt.is_some(), "child stdout missing");
-    let mut out = out_opt.unwrap();
+    let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
     let max_wait = Duration::from_secs(2);
-    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
-    assert!(
-        listen_addr_opt.is_some(),
+    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
-    );
-    let listen_addr = listen_addr_opt.unwrap();
+    ));
     client_sock
         .connect(listen_addr)
         .expect("connect to forwarder (IPv4)");
@@ -91,37 +85,30 @@ fn enforce_max_payload_ipv4() {
 
     // Check that the stats show one drop
     let json_wait = Duration::from_millis(50);
-    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
-    assert!(
-        stats_opt.is_some(),
+    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
         "did not see stats JSON line within {:?}",
         json_wait
-    );
-    let stats = stats_opt.unwrap();
+    ));
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
 
 #[test]
 fn enforce_max_payload_ipv6() {
-    let client_sock = match bind_udp_v6_client() {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("IPv6 loopback not available; skipping IPv6 test");
-            return;
-        }
+    // If IPv6 loopback is unavailable on this host, skip gracefully
+    // Client socket bound to ephemeral local port
+    let Ok(client_sock) = bind_udp_v6_client() else {
+        eprintln!("IPv6 loopback not available; skipping IPv6 test");
+        return;
     };
-    let (up_addr, _up) = match spawn_udp_echo_server_v6() {
-        Ok(t) => t,
-        Err(_) => {
-            eprintln!("IPv6 echo server could not bind; skipping IPv6 test");
-            return;
-        }
+
+    // Upstream echo server
+    let Ok((up_addr, _up_thread)) = spawn_udp_echo_server_v6() else {
+        eprintln!("IPv6 echo server could not bind; skipping IPv6 test");
+        return;
     };
 
     // Spawn the app binary
-    let bin_opt = find_app_bin();
-    assert!(bin_opt.is_some(), "could not find app binary");
-    let bin = bin_opt.unwrap();
+    let bin = find_app_bin().expect("could not find app binary");
 
     let mut child = ChildGuard::new(
         Command::new(bin)
@@ -144,18 +131,13 @@ fn enforce_max_payload_ipv6() {
     );
 
     // Read the forwarder's listen address and connect the client
-    let out_opt = take_child_stdout(&mut child);
-    assert!(out_opt.is_some(), "child stdout missing");
-    let mut out = out_opt.unwrap();
+    let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
     let max_wait = Duration::from_secs(2);
-    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
-    assert!(
-        listen_addr_opt.is_some(),
+    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
-    );
-    let listen_addr = listen_addr_opt.unwrap();
+    ));
     client_sock
         .connect(listen_addr)
         .expect("connect to forwarder (IPv6)");
@@ -194,29 +176,27 @@ fn enforce_max_payload_ipv6() {
 
     // Check that the stats show one drop
     let json_wait = Duration::from_millis(50);
-    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
-    assert!(
-        stats_opt.is_some(),
+    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
         "did not see stats JSON line within {:?}",
         json_wait
-    );
-    let stats = stats_opt.unwrap();
+    ));
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
 
 #[test]
 fn single_client_forwarding_ipv4() {
-    // Upstream echo server
-    let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
-
     // Client socket bound to ephemeral local port
-    let client_sock = bind_udp_v4_client();
-    let client_local = client_sock.local_addr().expect("client local addr");
+    let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
+    let client_local = client_sock
+        .local_addr()
+        .expect("IPv4 loopback address not available");
+
+    // Upstream echo server
+    let (up_addr, _up_thread) =
+        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
 
     // Spawn the app binary
-    let bin_opt = find_app_bin();
-    assert!(bin_opt.is_some(), "could not find app binary");
-    let bin = bin_opt.unwrap();
+    let bin = find_app_bin().expect("could not find app binary");
 
     // Run with small timeout & auto-exit on idle
     let mut child = ChildGuard::new(
@@ -238,18 +218,13 @@ fn single_client_forwarding_ipv4() {
     );
 
     // Read the forwarder's listen address and connect the client
-    let out_opt = take_child_stdout(&mut child);
-    assert!(out_opt.is_some(), "child stdout missing");
-    let mut out = out_opt.unwrap();
+    let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
     let max_wait = Duration::from_secs(2);
-    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
-    assert!(
-        listen_addr_opt.is_some(),
+    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
-    );
-    let listen_addr = listen_addr_opt.unwrap();
+    ));
     client_sock
         .connect(listen_addr)
         .expect("connect to forwarder (IPv4)");
@@ -283,13 +258,10 @@ fn single_client_forwarding_ipv4() {
 
     // Validate stats snapshot fields
     let json_wait = Duration::from_millis(50);
-    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
-    assert!(
-        stats_opt.is_some(),
+    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
         "did not see stats JSON line within {:?}",
         json_wait
-    );
-    let stats = stats_opt.unwrap();
+    ));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
     assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), count);
@@ -298,9 +270,9 @@ fn single_client_forwarding_ipv4() {
     assert!(stats["upstream_addr"].is_string());
 
     // Validate exact addresses (client local addr and upstream addr)
-    let stats_client = json_addr(&stats["client_addr"]);
+    let stats_client = json_addr(&stats["client_addr"]).expect("parse stats client_addr");
     assert_eq!(stats_client, client_local, "stats client_addr mismatch");
-    let stats_upstream = json_addr(&stats["upstream_addr"]);
+    let stats_upstream = json_addr(&stats["upstream_addr"]).expect("parse stats upstream_addr");
     assert_eq!(stats_upstream, up_addr, "stats upstream_addr mismatch");
 
     // Validate byte counters for multiple packets
@@ -362,27 +334,25 @@ fn single_client_forwarding_ipv4() {
 
 #[test]
 fn single_client_forwarding_ipv6() {
-    // if IPv6 loopback is unavailable on this host, skip gracefully
-    let client_sock = match bind_udp_v6_client() {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("IPv6 loopback not available; skipping IPv6 test");
-            return;
-        }
+    // If IPv6 loopback is unavailable on this host, skip gracefully
+    // Client socket bound to ephemeral local port
+    let Ok(client_sock) = bind_udp_v6_client() else {
+        eprintln!("IPv6 loopback not available; skipping IPv6 test");
+        return;
     };
-    let client_local = client_sock.local_addr().expect("client local addr v6");
-    let (up_addr, _up_thread) = match spawn_udp_echo_server_v6() {
-        Ok(t) => t,
-        Err(_) => {
-            eprintln!("IPv6 echo server could not bind; skipping IPv6 test");
-            return;
-        }
+    let Ok(client_local) = client_sock.local_addr() else {
+        eprintln!("IPv6 loopback address not available; skipping IPv6 test");
+        return;
+    };
+
+    // Upstream echo server
+    let Ok((up_addr, _up_thread)) = spawn_udp_echo_server_v6() else {
+        eprintln!("IPv6 echo server could not bind; skipping IPv6 test");
+        return;
     };
 
     // Spawn the app binary
-    let bin_opt = find_app_bin();
-    assert!(bin_opt.is_some(), "could not find app binary");
-    let bin = bin_opt.unwrap();
+    let bin = find_app_bin().expect("could not find app binary");
 
     let mut child = ChildGuard::new(
         Command::new(bin)
@@ -403,18 +373,13 @@ fn single_client_forwarding_ipv6() {
     );
 
     // Read the forwarder's listen address and connect the client
-    let out_opt = take_child_stdout(&mut child);
-    assert!(out_opt.is_some(), "child stdout missing");
-    let mut out = out_opt.unwrap();
+    let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
     let max_wait = Duration::from_secs(2);
-    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
-    assert!(
-        listen_addr_opt.is_some(),
+    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
-    );
-    let listen_addr = listen_addr_opt.unwrap();
+    ));
     client_sock
         .connect(listen_addr)
         .expect("connect to forwarder (IPv6)");
@@ -448,13 +413,10 @@ fn single_client_forwarding_ipv6() {
 
     // Validate stats snapshot fields
     let json_wait = Duration::from_millis(50);
-    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
-    assert!(
-        stats_opt.is_some(),
+    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
         "did not see stats JSON line within {:?}",
         json_wait
-    );
-    let stats = stats_opt.unwrap();
+    ));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
     assert_eq!(stats["c2u_pkts"].as_u64().unwrap_or(0), count);
@@ -463,9 +425,9 @@ fn single_client_forwarding_ipv6() {
     assert!(stats["upstream_addr"].is_string());
 
     // Validate exact addresses (client local addr and upstream addr)
-    let stats_client = json_addr(&stats["client_addr"]);
+    let stats_client = json_addr(&stats["client_addr"]).expect("parse stats client_addr v6");
     assert_eq!(stats_client, client_local, "stats client_addr v6 mismatch");
-    let stats_upstream = json_addr(&stats["upstream_addr"]);
+    let stats_upstream = json_addr(&stats["upstream_addr"]).expect("parse stats upstream_addr v6");
     assert_eq!(stats_upstream, up_addr, "stats upstream_addr v6 mismatch");
     assert_eq!(
         stats["c2u_bytes"].as_u64().unwrap_or(0),
@@ -525,17 +487,16 @@ fn single_client_forwarding_ipv6() {
 
 #[test]
 fn relock_after_timeout_drop_ipv4() {
-    // Upstream echo server
-    let (up_addr, _up_thread) = spawn_udp_echo_server_v4();
-
     // Two client sockets (different ephemeral ports)
-    let client_a = bind_udp_v4_client();
-    let client_b = bind_udp_v4_client();
+    let client_a = bind_udp_v4_client().expect("client_a IPv4 loopback not available");
+    let client_b = bind_udp_v4_client().expect("client_b IPv4 loopback not available");
+
+    // Upstream echo server
+    let (up_addr, _up_thread) =
+        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
 
     // Spawn the forwarder with short timeout and on-timeout=drop
-    let bin_opt = find_app_bin();
-    assert!(bin_opt.is_some(), "could not find app binary");
-    let bin = bin_opt.unwrap();
+    let bin = find_app_bin().expect("could not find app binary");
 
     let mut child = ChildGuard::new(
         Command::new(bin)
@@ -556,18 +517,13 @@ fn relock_after_timeout_drop_ipv4() {
     );
 
     // Read the forwarder's listen address and connect client A
-    let out_opt = take_child_stdout(&mut child);
-    assert!(out_opt.is_some(), "child stdout missing");
-    let mut out = out_opt.unwrap();
+    let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
     let max_wait = Duration::from_secs(2);
-    let listen_addr_opt = wait_for_listen_addr_from(&mut out, max_wait);
-    assert!(
-        listen_addr_opt.is_some(),
+    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
-    );
-    let listen_addr = listen_addr_opt.unwrap();
+    ));
 
     client_a
         .connect(listen_addr)
@@ -670,19 +626,15 @@ fn relock_after_timeout_drop_ipv4() {
 
     // Give forwarder a moment to print stats, then terminate cleanly
     let json_wait = Duration::from_millis(50);
-    let stats_opt = wait_for_stats_json_from(&mut out, json_wait);
-    let _ = child.kill();
-
-    // Check that the stats show the new client address matches client B and at least two pkts
-    assert!(
-        stats_opt.is_some(),
+    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
         "did not see stats JSON line within {:?}",
         json_wait
-    );
-    let stats = stats_opt.unwrap();
+    ));
+    let _ = child.kill();
 
     // The last locked client should be B (its local addr)
-    let stats_client = json_addr(&stats["client_addr"]);
+    let stats_client =
+        json_addr(&stats["client_addr"]).expect("parse stats client_addr after relock");
     assert_eq!(
         stats_client, client_b_local,
         "forwarder did not relock to client B"

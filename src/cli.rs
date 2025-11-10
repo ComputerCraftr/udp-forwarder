@@ -1,4 +1,6 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use crate::net::resolve_first;
+
+use std::net::SocketAddr;
 use std::{env, process};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,33 +73,24 @@ pub fn parse_args() -> Config {
     // Address helpers.
     fn parse_here(s: &str) -> (SupportedProtocol, SocketAddr) {
         let (proto, addr_str) = split_proto(s, "--here");
-        match addr_str.to_socket_addrs() {
-            Ok(mut it) => {
-                let sa = it.next().unwrap_or_else(|| {
-                    eprintln!("--here: no address resolved from '{s}'");
-                    print_usage_and_exit(2)
-                });
-                (proto, sa)
-            }
+        match resolve_first(addr_str) {
+            Ok(sa) => (proto, sa),
             Err(e) => {
-                eprintln!("--here: failed to parse '{s}': {e}");
+                eprintln!(
+                    "--here: failed to parse and resolve host:port or ip:port (got '{s}'): {e}"
+                );
                 print_usage_and_exit(2)
             }
         }
     }
     fn validate_there(s: &str) -> (SupportedProtocol, String) {
         let (proto, addr_str) = split_proto(s, "--there");
-        match addr_str.to_socket_addrs() {
-            Ok(mut it) => {
-                if it.next().is_some() {
-                    (proto, addr_str.to_string())
-                } else {
-                    eprintln!("--there: must be a resolvable host:port or ip:port (got '{s}')");
-                    print_usage_and_exit(2)
-                }
-            }
-            Err(_) => {
-                eprintln!("--there: must be a resolvable host:port or ip:port (got '{s}')");
+        match resolve_first(addr_str) {
+            Ok(sa) => (proto, sa.to_string()),
+            Err(e) => {
+                eprintln!(
+                    "--there: failed to parse and resolve host:port or ip:port (got '{s}'): {e}"
+                );
                 print_usage_and_exit(2)
             }
         }

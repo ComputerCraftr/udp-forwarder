@@ -49,13 +49,11 @@ impl Drop for ChildGuard {
     }
 }
 
-pub fn bind_udp_v4_client() -> UdpSocket {
-    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).expect("bind client");
-    sock.set_read_timeout(Some(Duration::from_millis(5000)))
-        .unwrap();
-    sock.set_write_timeout(Some(Duration::from_millis(5000)))
-        .unwrap();
-    sock
+pub fn bind_udp_v4_client() -> io::Result<UdpSocket> {
+    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
+    Ok(sock)
 }
 
 #[allow(dead_code)]
@@ -66,13 +64,11 @@ pub fn bind_udp_v6_client() -> io::Result<UdpSocket> {
     Ok(sock)
 }
 
-pub fn spawn_udp_echo_server_v4() -> (SocketAddr, thread::JoinHandle<()>) {
-    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).expect("bind v4 echo");
-    sock.set_read_timeout(Some(Duration::from_millis(5000)))
-        .unwrap();
-    sock.set_write_timeout(Some(Duration::from_millis(5000)))
-        .unwrap();
-    let addr = sock.local_addr().unwrap();
+pub fn spawn_udp_echo_server_v4() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
+    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
+    let addr = sock.local_addr()?;
     let handle = thread::spawn(move || {
         let mut buf = [0u8; 65535];
         loop {
@@ -84,7 +80,7 @@ pub fn spawn_udp_echo_server_v4() -> (SocketAddr, thread::JoinHandle<()>) {
             }
         }
     });
-    (addr, handle)
+    Ok((addr, handle))
 }
 
 #[allow(dead_code)]
@@ -92,7 +88,7 @@ pub fn spawn_udp_echo_server_v6() -> io::Result<(SocketAddr, thread::JoinHandle<
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
     sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
     sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
-    let addr = sock.local_addr().unwrap();
+    let addr = sock.local_addr()?;
     let handle = thread::spawn(move || {
         let mut buf = [0u8; 65535];
         loop {
@@ -302,13 +298,27 @@ pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> 
 }
 
 #[allow(dead_code)]
-pub fn json_addr(v: &Json) -> SocketAddr {
-    let s = v.as_str().expect("expected string socket addr in JSON");
+pub fn json_addr(v: &Json) -> io::Result<SocketAddr> {
+    // Expect a JSON string containing a socket address; propagate detailed errors instead of panicking.
+    let s = v.as_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected string socket addr in JSON",
+        )
+    })?;
 
-    if s == "null" {
-        panic!("null socket addr string in JSON");
+    // Reject explicit "null" or empty strings early with a clear message.
+    if s.eq_ignore_ascii_case("null") || s.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing or null socket addr string in JSON",
+        ));
     }
 
-    s.parse::<SocketAddr>()
-        .expect("invalid socket addr string in JSON")
+    s.parse::<SocketAddr>().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid socket addr string in JSON: '{s}': {e}"),
+        )
+    })
 }

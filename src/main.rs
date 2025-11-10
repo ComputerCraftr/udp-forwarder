@@ -4,7 +4,7 @@ mod stats;
 mod upstream;
 
 use cli::{Config, SupportedProtocol, TimeoutAction, parse_args};
-use net::{make_icmp_socket, make_udp_socket, resolve_first, send_payload, udp_disconnect};
+use net::{make_icmp_socket, make_udp_socket, send_payload, udp_disconnect};
 use socket2::Socket;
 use stats::Stats;
 use upstream::UpstreamManager;
@@ -252,10 +252,10 @@ fn main() -> io::Result<()> {
     let cfg = Arc::new(parse_args());
 
     // Initial upstream resolution + manager
-    let initial_up = resolve_first(&cfg.upstream_addr).expect("bad upstream addr");
-    let upstream_mgr = Arc::new(
-        UpstreamManager::new(&cfg.upstream_addr, cfg.upstream_proto).expect("upstream socket"),
-    );
+    let upstream_mgr = Arc::new(UpstreamManager::new(
+        &cfg.upstream_addr,
+        cfg.upstream_proto,
+    )?);
 
     // Listener for the local client
     let client_sock = Arc::new(match cfg.listen_proto {
@@ -281,7 +281,12 @@ fn main() -> io::Result<()> {
             // Signal the main loop to exit with code 130
             exit_code_set_c.store(SIGINT_EXIT, AtomOrdering::Relaxed);
         })
-        .expect("failed to set Ctrl-C handler");
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("ctrlc::set_handler failed: {e}"),
+            )
+        })?;
     }
 
     let local_bind = client_sock.local_addr()?;
@@ -291,7 +296,8 @@ fn main() -> io::Result<()> {
     };
     println!(
         "Listening on {}, forwarding to upstream {}. Waiting for first client...",
-        local_str, initial_up
+        local_str,
+        upstream_mgr.current_dest()
     );
     println!(
         "Timeout: {}s, on-timeout: {:?}",
