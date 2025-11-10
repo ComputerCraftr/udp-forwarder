@@ -247,6 +247,24 @@ fn run_watchdog_thread(
     }
 }
 
+#[inline]
+fn print_startup(local_bind: &socket2::SockAddr, upstream_mgr: &UpstreamManager, cfg: &Config) {
+    let local_str = match local_bind.as_socket() {
+        Some(sa) => sa.to_string(),
+        None => format!("{:?}", local_bind),
+    };
+    println!(
+        "Listening on {}, forwarding to upstream {}. Waiting for first client...",
+        local_str,
+        upstream_mgr.current_dest()
+    );
+    println!(
+        "Timeout: {}s, on-timeout: {:?}",
+        cfg.timeout_secs, cfg.on_timeout
+    );
+    println!("Re-resolve every: {}s (0=disabled)", cfg.reresolve_secs);
+}
+
 fn main() -> io::Result<()> {
     let t_start = Instant::now();
     let cfg = Arc::new(parse_args());
@@ -290,20 +308,7 @@ fn main() -> io::Result<()> {
     }
 
     let local_bind = client_sock.local_addr()?;
-    let local_str = match local_bind.as_socket() {
-        Some(sa) => sa.to_string(),
-        None => format!("{:?}", local_bind),
-    };
-    println!(
-        "Listening on {}, forwarding to upstream {}. Waiting for first client...",
-        local_str,
-        upstream_mgr.current_dest()
-    );
-    println!(
-        "Timeout: {}s, on-timeout: {:?}",
-        cfg.timeout_secs, cfg.on_timeout
-    );
-    println!("Re-resolve every: {}s (0=disabled)", cfg.reresolve_secs);
+    print_startup(&local_bind, &upstream_mgr, &cfg);
 
     // Client -> Upstream
     {
