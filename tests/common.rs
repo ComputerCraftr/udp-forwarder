@@ -49,6 +49,7 @@ impl Drop for ChildGuard {
     }
 }
 
+#[allow(dead_code)]
 pub fn bind_udp_v4_client() -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
@@ -64,6 +65,7 @@ pub fn bind_udp_v6_client() -> io::Result<UdpSocket> {
     Ok(sock)
 }
 
+#[allow(dead_code)]
 pub fn spawn_udp_echo_server_v4() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
@@ -207,11 +209,13 @@ pub fn find_app_bin() -> Option<String> {
 }
 
 /// Take ownership of the child's stdout, returning the ChildStdout handle.
+#[allow(dead_code)]
 pub fn take_child_stdout(child: &mut std::process::Child) -> Option<std::process::ChildStdout> {
     child.stdout.take()
 }
 
 /// Wait for a "Listening on ..." line from a generic reader, and parse the socket address.
+#[allow(dead_code)]
 pub fn wait_for_listen_addr_from<R: Read>(
     reader: &mut R,
     max_wait: Duration,
@@ -273,6 +277,7 @@ pub fn wait_for_locked_client_from<R: Read>(
 }
 
 /// Wait for a JSON stats line from a generic reader.
+#[allow(dead_code)]
 pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> Option<Json> {
     let start = Instant::now();
     let mut buf = String::new();
