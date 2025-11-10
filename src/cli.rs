@@ -46,6 +46,15 @@ pub fn parse_args() -> Config {
         process::exit(code)
     }
 
+    // DRY helper: set an Option<T> once; error if the flag was already provided
+    fn set_once<T>(slot: &mut Option<T>, val: T, flag: &str) {
+        if slot.is_some() {
+            eprintln!("{flag} specified multiple times");
+            print_usage_and_exit(2)
+        }
+        *slot = Some(val);
+    }
+
     // Split "UDP:host:port" / "ICMP:host:id" into (proto, "host:port")
     fn split_proto<'a>(s: &'a str, flag: &str) -> (SupportedProtocol, &'a str) {
         if let Some(rest) = s.strip_prefix("UDP:") {
@@ -111,12 +120,12 @@ pub fn parse_args() -> Config {
     let mut listen_opt: Option<(SupportedProtocol, SocketAddr)> = None;
     let mut upstream_opt: Option<(SupportedProtocol, String)> = None;
 
-    // Optional defaults
-    let mut timeout_secs: u64 = 10;
-    let mut on_timeout: TimeoutAction = TimeoutAction::Drop;
-    let mut stats_interval_mins: u32 = 60;
-    let mut max_payload: usize = 0; // unlimited
-    let mut reresolve_secs: u64 = 0;
+    // Optional (track presence to reject duplicates cleanly)
+    let mut timeout_secs: Option<u64> = None;
+    let mut on_timeout: Option<TimeoutAction> = None;
+    let mut stats_interval_mins: Option<u32> = None;
+    let mut max_payload: Option<usize> = None; // unlimited if None
+    let mut reresolve_secs: Option<u64> = None; // 0 if None
 
     // Parse flags using an iterator (no manual index math)
     let mut args_iter = env::args().skip(1).peekable();
@@ -124,19 +133,22 @@ pub fn parse_args() -> Config {
         match arg.as_str() {
             "--here" => {
                 let val = get_next_value(&mut args_iter, "--here");
-                listen_opt = Some(parse_here(&val));
+                let parsed = parse_here(&val);
+                set_once(&mut listen_opt, parsed, "--here");
             }
             "--there" => {
                 let val = get_next_value(&mut args_iter, "--there");
-                upstream_opt = Some(validate_there(&val));
+                let parsed = validate_there(&val);
+                set_once(&mut upstream_opt, parsed, "--there");
             }
             "--timeout-secs" => {
                 let val = get_next_value(&mut args_iter, "--timeout-secs");
-                timeout_secs = parse_num::<u64>(&val, "--timeout-secs");
+                let parsed = parse_num::<u64>(&val, "--timeout-secs");
+                set_once(&mut timeout_secs, parsed, "--timeout-secs");
             }
             "--on-timeout" => {
                 let val = get_next_value(&mut args_iter, "--on-timeout");
-                on_timeout = match val.as_str() {
+                let action = match val.as_str() {
                     "drop" => TimeoutAction::Drop,
                     "exit" => TimeoutAction::Exit,
                     _ => {
@@ -144,18 +156,22 @@ pub fn parse_args() -> Config {
                         print_usage_and_exit(2)
                     }
                 };
+                set_once(&mut on_timeout, action, "--on-timeout");
             }
             "--stats-interval-mins" => {
                 let val = get_next_value(&mut args_iter, "--stats-interval-mins");
-                stats_interval_mins = parse_num::<u32>(&val, "--stats-interval-mins");
+                let parsed = parse_num::<u32>(&val, "--stats-interval-mins");
+                set_once(&mut stats_interval_mins, parsed, "--stats-interval-mins");
             }
             "--max-payload" => {
                 let val = get_next_value(&mut args_iter, "--max-payload");
-                max_payload = parse_num::<usize>(&val, "--max-payload");
+                let parsed = parse_num::<usize>(&val, "--max-payload");
+                set_once(&mut max_payload, parsed, "--max-payload");
             }
             "--reresolve-secs" => {
                 let val = get_next_value(&mut args_iter, "--reresolve-secs");
-                reresolve_secs = parse_num::<u64>(&val, "--reresolve-secs");
+                let parsed = parse_num::<u64>(&val, "--reresolve-secs");
+                set_once(&mut reresolve_secs, parsed, "--reresolve-secs");
             }
             "-h" | "--help" => print_usage_and_exit(0),
             other => {
@@ -179,6 +195,13 @@ pub fn parse_args() -> Config {
             print_usage_and_exit(2)
         }
     };
+
+    // Defaults
+    let timeout_secs = timeout_secs.unwrap_or(10);
+    let on_timeout = on_timeout.unwrap_or(TimeoutAction::Drop);
+    let stats_interval_mins = stats_interval_mins.unwrap_or(60);
+    let max_payload = max_payload.unwrap_or(0);
+    let reresolve_secs = reresolve_secs.unwrap_or(0);
 
     Config {
         listen_addr,
