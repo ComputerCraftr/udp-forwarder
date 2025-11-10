@@ -293,40 +293,65 @@ fn single_client_forwarding_ipv4() {
         payload.len() as u64
     );
 
-    // Latency fields should be numeric
+    // Latency fields: parse once, then assert in a sensible order
     assert!(stats["c2u_us_max"].is_number());
     assert!(stats["u2c_us_max"].is_number());
-    let c2u_us_max = stats["c2u_us_max"].as_u64().unwrap();
-    let u2c_us_max = stats["u2c_us_max"].as_u64().unwrap();
     assert!(stats["c2u_us_avg"].is_number());
     assert!(stats["u2c_us_avg"].is_number());
-    let c2u_us_avg = stats["c2u_us_avg"].as_u64().unwrap();
-    let u2c_us_avg = stats["u2c_us_avg"].as_u64().unwrap();
     assert!(stats["c2u_us_ewma"].is_number());
     assert!(stats["u2c_us_ewma"].is_number());
+
+    let c2u_us_max = stats["c2u_us_max"].as_u64().unwrap();
+    let u2c_us_max = stats["u2c_us_max"].as_u64().unwrap();
+    let c2u_us_avg = stats["c2u_us_avg"].as_u64().unwrap();
+    let u2c_us_avg = stats["u2c_us_avg"].as_u64().unwrap();
     let c2u_us_ewma = stats["c2u_us_ewma"].as_u64().unwrap();
     let u2c_us_ewma = stats["u2c_us_ewma"].as_u64().unwrap();
+
+    // Averages and EWMAs should be strictly positive
     assert!(
-        c2u_us_max > c2u_us_avg,
-        "impossible value: c2u_us_avg {} >= c2u_us_max {}",
+        c2u_us_avg > 0,
+        "expected c2u_us_avg > 0, got {}",
+        c2u_us_avg
+    );
+    assert!(
+        u2c_us_avg > 0,
+        "expected u2c_us_avg > 0, got {}",
+        u2c_us_avg
+    );
+    assert!(
+        c2u_us_ewma > 0,
+        "expected c2u_us_ewma > 0, got {}",
+        c2u_us_ewma
+    );
+    assert!(
+        u2c_us_ewma > 0,
+        "expected u2c_us_ewma > 0, got {}",
+        u2c_us_ewma
+    );
+
+    // Per-direction relational sanity: max >= avg, max >= ewma, and avg < max
+    assert!(
+        c2u_us_max >= c2u_us_avg,
+        "impossible: c2u_us_avg {} > c2u_us_max {}",
         c2u_us_avg,
         c2u_us_max
     );
     assert!(
-        u2c_us_max > u2c_us_avg,
-        "impossible value: u2c_us_avg {} >= u2c_us_max {}",
+        u2c_us_max >= u2c_us_avg,
+        "impossible: u2c_us_avg {} > u2c_us_max {}",
         u2c_us_avg,
         u2c_us_max
     );
     assert!(
         c2u_us_max >= c2u_us_ewma,
-        "impossible value: c2u_us_ewma {} > c2u_us_max {}",
+        "impossible: c2u_us_ewma {} > c2u_us_max {}",
         c2u_us_ewma,
         c2u_us_max
     );
     assert!(
         u2c_us_max >= u2c_us_ewma,
-        "impossible value: u2c_us_ewma {} > u2c_us_max {}",
+        "impossible: u2c_us_ewma {} > u2c_us_max {}",
         u2c_us_ewma,
         u2c_us_max
     );
@@ -446,40 +471,65 @@ fn single_client_forwarding_ipv6() {
         payload.len() as u64
     );
 
-    // Latency fields should be numeric
+    // Latency fields: parse once, then assert in a sensible order
     assert!(stats["c2u_us_max"].is_number());
     assert!(stats["u2c_us_max"].is_number());
-    let c2u_us_max = stats["c2u_us_max"].as_u64().unwrap();
-    let u2c_us_max = stats["u2c_us_max"].as_u64().unwrap();
     assert!(stats["c2u_us_avg"].is_number());
     assert!(stats["u2c_us_avg"].is_number());
-    let c2u_us_avg = stats["c2u_us_avg"].as_u64().unwrap();
-    let u2c_us_avg = stats["u2c_us_avg"].as_u64().unwrap();
     assert!(stats["c2u_us_ewma"].is_number());
     assert!(stats["u2c_us_ewma"].is_number());
+
+    let c2u_us_max = stats["c2u_us_max"].as_u64().unwrap();
+    let u2c_us_max = stats["u2c_us_max"].as_u64().unwrap();
+    let c2u_us_avg = stats["c2u_us_avg"].as_u64().unwrap();
+    let u2c_us_avg = stats["u2c_us_avg"].as_u64().unwrap();
     let c2u_us_ewma = stats["c2u_us_ewma"].as_u64().unwrap();
     let u2c_us_ewma = stats["u2c_us_ewma"].as_u64().unwrap();
+
+    // Averages and EWMAs should be strictly positive
     assert!(
-        c2u_us_max > c2u_us_avg,
-        "impossible value: c2u_us_avg {} >= c2u_us_max {}",
+        c2u_us_avg > 0,
+        "expected c2u_us_avg > 0, got {}",
+        c2u_us_avg
+    );
+    assert!(
+        u2c_us_avg > 0,
+        "expected u2c_us_avg > 0, got {}",
+        u2c_us_avg
+    );
+    assert!(
+        c2u_us_ewma > 0,
+        "expected c2u_us_ewma > 0, got {}",
+        c2u_us_ewma
+    );
+    assert!(
+        u2c_us_ewma > 0,
+        "expected u2c_us_ewma > 0, got {}",
+        u2c_us_ewma
+    );
+
+    // Per-direction relational sanity: max >= avg, max >= ewma, and avg < max
+    assert!(
+        c2u_us_max >= c2u_us_avg,
+        "impossible: c2u_us_avg {} > c2u_us_max {}",
         c2u_us_avg,
         c2u_us_max
     );
     assert!(
-        u2c_us_max > u2c_us_avg,
-        "impossible value: u2c_us_avg {} >= u2c_us_max {}",
+        u2c_us_max >= u2c_us_avg,
+        "impossible: u2c_us_avg {} > u2c_us_max {}",
         u2c_us_avg,
         u2c_us_max
     );
     assert!(
         c2u_us_max >= c2u_us_ewma,
-        "impossible value: c2u_us_ewma {} > c2u_us_max {}",
+        "impossible: c2u_us_ewma {} > c2u_us_max {}",
         c2u_us_ewma,
         c2u_us_max
     );
     assert!(
         u2c_us_max >= u2c_us_ewma,
-        "impossible value: u2c_us_ewma {} > u2c_us_max {}",
+        "impossible: u2c_us_ewma {} > u2c_us_max {}",
         u2c_us_ewma,
         u2c_us_max
     );

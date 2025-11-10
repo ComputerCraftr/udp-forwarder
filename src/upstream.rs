@@ -15,7 +15,7 @@ pub struct UpstreamManager {
     sock: Arc<Mutex<Socket>>,             // cold-path replacement only
     sock_proto: SupportedProtocol,        // no replacement
     version: AtomicU64,                   // increments on any change
-    periodic_started: AtomicBool,         // ensures spawn_periodic runs once
+    spawned: AtomicBool,                  // ensures spawn_periodic runs once
 }
 
 impl UpstreamManager {
@@ -27,7 +27,7 @@ impl UpstreamManager {
             sock: Arc::new(Mutex::new(sock)),
             sock_proto: initial_proto,
             version: AtomicU64::new(0),
-            periodic_started: AtomicBool::new(false),
+            spawned: AtomicBool::new(false),
         })
     }
 
@@ -98,7 +98,7 @@ impl UpstreamManager {
         }
         // Single-init gate like stats thread: only allow one periodic worker.
         if self
-            .periodic_started
+            .spawned
             .compare_exchange(false, true, AtomOrdering::Relaxed, AtomOrdering::Relaxed)
             .is_err()
         {
