@@ -220,20 +220,34 @@ pub fn wait_for_listen_addr_from<R: Read>(
     reader: &mut R,
     max_wait: Duration,
 ) -> Option<SocketAddr> {
+    let parse_sa = |line: &str| {
+        // Take the left side before the first comma and strip the protocol token
+        let addr = line
+            .strip_prefix(PREFIX)?
+            .split_once(',')
+            .map(|(left, _)| left.trim())?
+            .split_once(':')
+            .map(|(_, right)| right)?;
+
+        // Fast path: direct SocketAddr parse (no DNS, no allocations).
+        if let Ok(sa) = addr.parse::<SocketAddr>() {
+            return Some(sa);
+        }
+
+        // Fallback: resolve host:port or [IPv6]:port via DNS.
+        return addr.to_socket_addrs().ok()?.next();
+    };
+
     let start = Instant::now();
     let mut r = BufReader::new(reader);
+    const PREFIX: &str = "Listening on ";
     while start.elapsed() < max_wait {
         let mut line = String::new();
         match r.read_line(&mut line) {
             Ok(0) => thread::sleep(Duration::from_millis(25)),
             Ok(_) => {
-                if let Some(rest) = line.strip_prefix("Listening on ") {
-                    if let Some((addr_str, _)) = rest.split_once(',') {
-                        let mut it = addr_str.to_string().to_socket_addrs().ok()?;
-                        if let Some(sa) = it.next() {
-                            return Some(sa);
-                        }
-                    }
+                if let Some(sa) = parse_sa(&line) {
+                    return Some(sa);
                 }
             }
             Err(_) => thread::sleep(Duration::from_millis(25)),
@@ -249,6 +263,23 @@ pub fn wait_for_locked_client_from<R: Read>(
     reader: &mut R,
     max_wait: Duration,
 ) -> Option<SocketAddr> {
+    let parse_sa = |line: &str| {
+        // Take the left side before the second space
+        // Expected form: "<addr> (connected)\n"
+        let addr = line
+            .strip_prefix(PREFIX)?
+            .split_once(' ')
+            .map(|(left, _)| left.trim())?;
+
+        // Fast path: direct SocketAddr parse (no DNS, no allocations).
+        if let Ok(sa) = addr.parse::<SocketAddr>() {
+            return Some(sa);
+        }
+
+        // Fallback: resolve host:port or [IPv6]:port via DNS.
+        return addr.to_socket_addrs().ok()?.next();
+    };
+
     let start = Instant::now();
     let mut r = BufReader::new(reader);
     const PREFIX: &str = "Locked to single client ";
@@ -257,17 +288,8 @@ pub fn wait_for_locked_client_from<R: Read>(
         match r.read_line(&mut line) {
             Ok(0) => thread::sleep(Duration::from_millis(25)),
             Ok(_) => {
-                if let Some(rest) = line.strip_prefix(PREFIX) {
-                    // Expected form: "<addr> (connected)\n"
-                    let addr_part = match rest.split_once(' ') {
-                        Some((addr, _)) => addr,
-                        None => rest.trim_end(),
-                    };
-                    // Resolve and return the first parsed SocketAddr
-                    let mut it = addr_part.to_string().to_socket_addrs().ok()?;
-                    if let Some(sa) = it.next() {
-                        return Some(sa);
-                    }
+                if let Some(sa) = parse_sa(&line) {
+                    return Some(sa);
                 }
             }
             Err(_) => thread::sleep(Duration::from_millis(25)),

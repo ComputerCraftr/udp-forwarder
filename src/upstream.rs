@@ -11,11 +11,11 @@ use std::time::Duration;
 
 /// Manages current upstream destination and a hot-swappable Socket.
 pub struct UpstreamManager {
-    current_addr: Arc<Mutex<SocketAddr>>, // cold-path updates only
-    sock: Arc<Mutex<Socket>>,             // cold-path replacement only
-    sock_proto: SupportedProtocol,        // no replacement
-    version: AtomicU64,                   // increments on any change
-    spawned: AtomicBool,                  // ensures spawn_periodic runs once
+    current_addr: Mutex<SocketAddr>, // cold-path updates only
+    sock: Mutex<Socket>,             // cold-path replacement only
+    sock_proto: SupportedProtocol,   // no replacement
+    version: AtomicU64,              // increments on any change
+    spawned: AtomicBool,             // ensures spawn_periodic runs once
 }
 
 impl UpstreamManager {
@@ -23,16 +23,16 @@ impl UpstreamManager {
         let addr = resolve_first(initial_target)?;
         let sock = make_upstream_socket_for(addr, initial_proto)?;
         Ok(Self {
-            current_addr: Arc::new(Mutex::new(addr)),
-            sock: Arc::new(Mutex::new(sock)),
+            current_addr: Mutex::new(addr),
+            sock: Mutex::new(sock),
             sock_proto: initial_proto,
             version: AtomicU64::new(0),
             spawned: AtomicBool::new(false),
         })
     }
 
-    pub fn current_dest(&self) -> SocketAddr {
-        *self.current_addr.lock().unwrap()
+    pub fn current_dest(&self) -> (SocketAddr, SupportedProtocol) {
+        (*self.current_addr.lock().unwrap(), self.sock_proto)
     }
 
     /// Re-resolve a target string and update: swap socket if family flips.
@@ -129,7 +129,7 @@ impl UpstreamManager {
     pub fn refresh_handles(&self) -> (Socket, SocketAddr, u64) {
         // lock order: sock then addr (stable and short-lived)
         let sock = Self::clone_socket(self);
-        let dest = Self::current_dest(self);
+        let dest = Self::current_dest(self).0;
         let v = Self::version(self);
         (sock, dest, v)
     }

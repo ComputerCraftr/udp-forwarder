@@ -345,6 +345,12 @@ pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> i
 
 #[inline]
 pub fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
+    // Fast path: direct SocketAddr parse (no DNS, no allocations).
+    if let Ok(sa) = addr.parse::<SocketAddr>() {
+        return Ok(sa);
+    }
+
+    // Fallback: resolve host:port or [IPv6]:port via DNS.
     let mut iter = addr.to_socket_addrs()?;
     iter.next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No address resolved"))

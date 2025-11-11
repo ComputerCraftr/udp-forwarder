@@ -253,10 +253,10 @@ fn print_startup(local_bind: &socket2::SockAddr, upstream_mgr: &UpstreamManager,
         Some(sa) => sa.to_string(),
         None => format!("{:?}", local_bind),
     };
+    let (upstream_addr, upstream_proto) = { upstream_mgr.current_dest() };
     println!(
-        "Listening on {}, forwarding to upstream {}. Waiting for first client...",
-        local_str,
-        upstream_mgr.current_dest()
+        "Listening on {}:{}, forwarding to upstream {}:{}. Waiting for first client...",
+        cfg.listen_proto, local_str, upstream_proto, upstream_addr
     );
     println!(
         "Timeout: {}s, on-timeout: {:?}",
@@ -286,7 +286,7 @@ fn main() -> io::Result<()> {
     let locked = Arc::new(AtomicBool::new(false));
     let last_seen_ns = Arc::new(AtomicU64::new(0));
 
-    let stats = Stats::new();
+    let stats = Arc::new(Stats::new());
     let exit_code_set = Arc::new(AtomicU32::new(0));
 
     // Graceful shutdown on Ctrl-C / SIGINT (and SIGTERM on Unix via ctrlc)
@@ -385,6 +385,7 @@ fn main() -> io::Result<()> {
 
     // Stats thread
     stats.spawn_stats_printer(
+        cfg.listen_proto,
         Arc::clone(&client_peer),
         Arc::clone(&upstream_mgr),
         u64::from(cfg.stats_interval_mins).saturating_mul(60),

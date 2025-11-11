@@ -28,7 +28,7 @@ fn stress_one_minute_ipv4() {
             .arg("--here")
             .arg("UDP:127.0.0.1:0")
             .arg("--there")
-            .arg("UDP:".to_string() + &up_addr.to_string())
+            .arg(format!("UDP:{up_addr}"))
             .arg("--timeout-secs")
             .arg("2")
             .arg("--on-timeout")

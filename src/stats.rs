@@ -1,3 +1,4 @@
+use crate::cli::SupportedProtocol;
 use crate::upstream::UpstreamManager;
 use serde_json::json;
 
@@ -40,8 +41,8 @@ struct Agg {
 }
 
 impl Stats {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new() -> Self {
+        Self {
             start: OnceLock::new(),
             spawned: AtomicBool::new(false),
             agg: Agg {
@@ -62,7 +63,7 @@ impl Stats {
                 c2u_lat_ewma_ns: AtomicU64::new(0),
                 u2c_lat_ewma_ns: AtomicU64::new(0),
             },
-        })
+        }
     }
 
     #[inline]
@@ -228,6 +229,7 @@ impl Stats {
     #[inline]
     fn print_snapshot(
         &self,
+        client_proto: SupportedProtocol,
         client_peer: &Mutex<Option<SocketAddr>>,
         upstream_mgr: &UpstreamManager,
     ) {
@@ -270,12 +272,14 @@ impl Stats {
         let client_addr = client_opt
             .map(|x| x.to_string())
             .unwrap_or_else(|| "null".to_string());
-        let upstream_addr = { upstream_mgr.current_dest().to_string() };
+        let (upstream_addr, upstream_proto) = { upstream_mgr.current_dest() };
         let line = json!({
             "uptime_s": uptime,
             "locked": locked,
             "client_addr": client_addr,
+            "client_proto": client_proto.to_str(),
             "upstream_addr": upstream_addr,
+            "upstream_proto": upstream_proto.to_str(),
             "c2u_pkts": c2u_pkts,
             "c2u_bytes": c2u_bytes,
             "c2u_bytes_max": c2u_bytes_max,
@@ -298,6 +302,7 @@ impl Stats {
 
     pub fn spawn_stats_printer(
         self: &Arc<Self>,
+        client_proto: SupportedProtocol,
         client_peer: Arc<Mutex<Option<SocketAddr>>>,
         upstream_mgr: Arc<UpstreamManager>,
         every_secs: u64,
@@ -385,7 +390,7 @@ impl Stats {
                 // Check for cooperative shutdown **after** EWMA is up to date
                 let exit_code_local = exit_code_set.load(AtomOrdering::Relaxed);
                 if (exit_code_local & (1 << 31)) != 0 {
-                    stats.print_snapshot(&client_peer, &upstream_mgr);
+                    stats.print_snapshot(client_proto, &client_peer, &upstream_mgr);
                     let exit_code = (exit_code_local & !(1 << 31)) as i32;
                     process::exit(exit_code);
                 }
@@ -393,7 +398,7 @@ impl Stats {
                 // Print only on schedule
                 let now = Instant::now();
                 if now >= next_print_at {
-                    stats.print_snapshot(&client_peer, &upstream_mgr);
+                    stats.print_snapshot(client_proto, &client_peer, &upstream_mgr);
                     // Advance the next print boundary, accounting for any missed periods
                     let elapsed = now.duration_since(next_print_at).as_secs();
                     let skipped = (elapsed / every) + 1; // at least one boundary

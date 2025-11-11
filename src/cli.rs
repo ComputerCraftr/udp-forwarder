@@ -9,6 +9,29 @@ pub enum SupportedProtocol {
     ICMP,
 }
 
+impl SupportedProtocol {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            s if s.eq_ignore_ascii_case("udp") => Some(Self::UDP),
+            s if s.eq_ignore_ascii_case("icmp") => Some(Self::ICMP),
+            _ => None,
+        }
+    }
+
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            Self::UDP => "UDP",
+            Self::ICMP => "ICMP",
+        }
+    }
+}
+
+impl std::fmt::Display for SupportedProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_str())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeoutAction {
     Drop,
@@ -57,14 +80,12 @@ pub fn parse_args() -> Config {
 
     // Split "UDP:host:port" / "ICMP:host:id" into (proto, "host:port")
     fn split_proto<'a>(s: &'a str, flag: &str) -> (SupportedProtocol, &'a str) {
-        if let Some(rest) = s.strip_prefix("UDP:") {
-            (SupportedProtocol::UDP, rest)
-        } else if let Some(rest) = s.strip_prefix("ICMP:") {
-            (SupportedProtocol::ICMP, rest)
-        } else {
-            eprintln!("{flag} must be UDP:<ip>:<port> or ICMP:<ip>:<id> (got '{s}')");
-            print_usage_and_exit(2)
-        }
+        s.split_once(':')
+            .and_then(|(proto_str, rest)| SupportedProtocol::from_str(proto_str).map(|p| (p, rest)))
+            .unwrap_or_else(|| {
+                eprintln!("{flag} must be UDP:<ip>:<port> or ICMP:<ip>:<id> (got '{s}')");
+                print_usage_and_exit(2)
+            })
     }
 
     // Generic number parser with good errors.
