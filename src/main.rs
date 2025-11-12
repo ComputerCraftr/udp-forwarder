@@ -269,7 +269,6 @@ fn run_watchdog_thread(
     }
 }
 
-#[inline]
 fn print_startup(local_bind: &socket2::SockAddr, upstream_mgr: &UpstreamManager, cfg: &Config) {
     let local_str = match local_bind.as_socket() {
         Some(sa) => sa.to_string(),

@@ -226,7 +226,6 @@ impl Stats {
         let _ = out.flush();
     }
 
-    #[inline]
     fn print_snapshot(
         &self,
         client_proto: SupportedProtocol,

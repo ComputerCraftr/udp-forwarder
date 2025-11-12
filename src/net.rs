@@ -63,7 +63,6 @@ pub fn make_socket(
     Ok(sock)
 }
 
-#[inline]
 pub fn send_payload(
     c2u: bool,
     connected: bool,
@@ -223,7 +222,6 @@ fn parse_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], u16, bool)> {
 }
 
 /// Send an ICMP Echo Request or Reply (IPv4 or IPv6).
-#[inline(always)]
 fn send_icmp_echo(
     sock: &Socket,
     dest: SocketAddr,
@@ -450,7 +448,7 @@ pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
 }
 
 /// Compute the Internet Checksum (RFC 1071) for ICMPv4 header+payload.
-#[inline(always)]
+#[inline]
 fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
     // Accumulate 16-bit words over header (with zeroed checksum) then payload.
     let mut sum: u32 = 0;
