@@ -3,8 +3,8 @@ mod net;
 mod stats;
 mod upstream;
 
-use cli::{Config, SupportedProtocol, TimeoutAction, parse_args};
-use net::{make_icmp_socket, make_udp_socket, send_payload, udp_disconnect};
+use cli::{Config, TimeoutAction, parse_args};
+use net::{make_socket, send_payload, udp_disconnect};
 use socket2::Socket;
 use stats::Stats;
 use upstream::UpstreamManager;
@@ -276,10 +276,7 @@ fn main() -> io::Result<()> {
     )?);
 
     // Listener for the local client
-    let client_sock = Arc::new(match cfg.listen_proto {
-        SupportedProtocol::ICMP => make_icmp_socket(cfg.listen_addr, 5000, false)?,
-        _ => make_udp_socket(cfg.listen_addr, 5000, false)?,
-    });
+    let client_sock = Arc::new(make_socket(cfg.listen_addr, cfg.listen_proto, 5000, false)?);
 
     // Single-client state
     let client_peer = Arc::new(Mutex::new(None));

@@ -19,81 +19,48 @@ fn be16_32(b0: u8, b1: u8) -> u32 {
     ((b0 as u32) << 8) | (b1 as u32)
 }
 
-/// Create a UDP socket bound to `bind_addr`.
-pub fn make_udp_socket(
+/// Create a socket (UDP datagram or raw ICMP) bound to `bind_addr`.
+pub fn make_socket(
     bind_addr: SocketAddr,
+    proto: SupportedProtocol,
     read_timeout_ms: u64,
     reuseaddr: bool,
 ) -> io::Result<Socket> {
-    let domain = match bind_addr {
-        SocketAddr::V6(_) => Domain::IPV6,
-        _ => Domain::IPV4,
+    // Raw ICMP: use well-known protocol numbers cross-platform
+    // IPv4: 1, IPv6: 58
+    let (domain, pnum) = match bind_addr {
+        SocketAddr::V6(_) => (Domain::IPV6, 58),
+        _ => (Domain::IPV4, 1),
     };
 
-    // Construct a socket from scratch
-    let udp_sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    // Select socket type and protocol per requested transport
+    let (sock_type, sock_proto) = match proto {
+        SupportedProtocol::ICMP => (Type::from(3), Some(Protocol::from(pnum))), // SOCK_RAW = 3
+        _ => (Type::DGRAM, Some(Protocol::UDP)),
+    };
 
-    // Allow SO_REUSEADDR for multi-threading
+    let sock = Socket::new(domain, sock_type, sock_proto)?;
+
     if reuseaddr {
-        udp_sock.set_reuse_address(true)?;
+        sock.set_reuse_address(true)?;
     }
 
     // Best-effort bigger buffers
-    udp_sock.set_recv_buffer_size(1 << 20)?;
-    udp_sock.set_send_buffer_size(1 << 20)?;
+    sock.set_recv_buffer_size(1 << 20)?;
+    sock.set_send_buffer_size(1 << 20)?;
 
-    // Bind the UDP Socket
+    // Bind
     let bind_sa = SockAddr::from(bind_addr);
-    udp_sock.bind(&bind_sa)?;
+    sock.bind(&bind_sa)?;
 
-    // Set inactive timeout between upstream manager refreshes
-    udp_sock.set_read_timeout(if read_timeout_ms == 0 {
-        None // block forever
+    // Read timeout
+    sock.set_read_timeout(if read_timeout_ms == 0 {
+        None
     } else {
         Some(Duration::from_millis(read_timeout_ms))
     })?;
 
-    Ok(udp_sock)
-}
-
-/// Create a raw ICMP socket bound to `bind_addr`.
-/// NOTE: Raw sockets typically require CAP_NET_RAW (Linux) or root (BSD/macOS).
-pub fn make_icmp_socket(
-    bind_addr: SocketAddr,
-    read_timeout_ms: u64,
-    reuseaddr: bool,
-) -> io::Result<Socket> {
-    // Use well-known protocol numbers to stay cross-platform (no libc on Windows)
-    // IPv4: IPPROTO_ICMP = 1, IPv6: IPPROTO_ICMPV6 = 58
-    let (domain, proto) = match bind_addr {
-        SocketAddr::V6(_) => (Domain::IPV6, Protocol::from(58)), // ICMPv6
-        _ => (Domain::IPV4, Protocol::from(1)),                  // ICMPv4
-    };
-
-    // Construct a raw socket
-    let icmp_sock = Socket::new(domain, Type::from(3), Some(proto))?; // SOCK_RAW = 3 (POSIX & Winsock)
-
-    // Allow SO_REUSEADDR for multi-threading
-    if reuseaddr {
-        icmp_sock.set_reuse_address(true)?;
-    }
-
-    // Best-effort bigger buffers
-    icmp_sock.set_recv_buffer_size(1 << 20)?;
-    icmp_sock.set_send_buffer_size(1 << 20)?;
-
-    // Bind the ICMP Socket
-    let bind_sa = SockAddr::from(bind_addr);
-    icmp_sock.bind(&bind_sa)?;
-
-    // Set inactive timeout
-    icmp_sock.set_read_timeout(if read_timeout_ms == 0 {
-        None // block forever
-    } else {
-        Some(Duration::from_millis(read_timeout_ms))
-    })?;
-
-    Ok(icmp_sock)
+    Ok(sock)
 }
 
 #[inline]
@@ -335,10 +302,7 @@ pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> i
         _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
     };
 
-    let sock = match proto {
-        SupportedProtocol::ICMP => make_icmp_socket(bind_addr, 5000, false)?,
-        _ => make_udp_socket(bind_addr, 5000, false)?,
-    };
+    let sock = make_socket(bind_addr, proto, 5000, false)?;
 
     let dest_sa = SockAddr::from(dest);
     sock.connect(&dest_sa)?;
