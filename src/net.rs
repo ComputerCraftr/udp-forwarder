@@ -2,7 +2,7 @@ use crate::cli::{Config, SupportedProtocol};
 use crate::stats::Stats;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
-use std::io;
+use std::io::{self, IoSlice};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -78,29 +78,6 @@ pub fn send_payload(
     recv: SocketAddr,
     debug: bool,
 ) {
-    // Direction-local helpers
-    let stats_drop_oversize = |c2u: bool, stats: &Stats| {
-        if c2u {
-            stats.drop_c2u_oversize()
-        } else {
-            stats.drop_u2c_oversize()
-        }
-    };
-    let stats_err = |c2u: bool, stats: &Stats| {
-        if c2u {
-            stats.c2u_err()
-        } else {
-            stats.u2c_err()
-        }
-    };
-    let stats_add = |c2u: bool, stats: &Stats, len: usize, t_recv: Instant, t_send: Instant| {
-        if c2u {
-            stats.add_c2u(len as u64, t_recv, t_send)
-        } else {
-            stats.add_u2c(len as u64, t_recv, t_send)
-        }
-    };
-
     // Determine source/destination protocol for this direction once.
     let (src_proto, dst_proto) = if c2u {
         (cfg.listen_proto, cfg.upstream_proto)
@@ -116,7 +93,11 @@ pub fn send_payload(
                 if debug {
                     eprintln!("Dropping packet: Invalid ICMP echo frame ({e})");
                 }
-                stats_err(c2u, stats);
+                if c2u {
+                    stats.c2u_err()
+                } else {
+                    stats.u2c_err()
+                }
                 return;
             }
         }
@@ -140,7 +121,11 @@ pub fn send_payload(
                 len, cfg.max_payload
             );
         }
-        stats_drop_oversize(c2u, stats);
+        if c2u {
+            stats.drop_c2u_oversize()
+        } else {
+            stats.drop_u2c_oversize()
+        }
         return;
     }
 
@@ -163,13 +148,21 @@ pub fn send_payload(
         Ok(_) => {
             let t_send = Instant::now();
             last_seen.store(Stats::dur_ns(t_start, t_send), AtomOrdering::Relaxed);
-            stats_add(c2u, stats, len, t_recv, t_send);
+            if c2u {
+                stats.add_c2u(len as u64, t_recv, t_send)
+            } else {
+                stats.add_u2c(len as u64, t_recv, t_send)
+            }
         }
         Err(e) => {
             if debug {
                 eprintln!("Send to '{}' error: {}", dest, e);
             }
-            stats_err(c2u, stats);
+            if c2u {
+                stats.c2u_err()
+            } else {
+                stats.u2c_err()
+            }
         }
     }
 }
@@ -181,7 +174,9 @@ fn parse_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], u16, bool)> {
     // We normalize by skipping an IP header if present, validate it's ICMP(v6),
     // then verify Echo type/code and strip the 8-byte ICMP Echo header.
 
-    if buf.len() < 8 {
+    let n = buf.len();
+    // Early absolute minimum: ICMP header is 8 bytes (with or without IP header present)
+    if n < 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "ICMP frame too short",
@@ -189,45 +184,23 @@ fn parse_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], u16, bool)> {
     }
 
     let mut off = 0usize;
-
-    // Detect IPv4 header (version 4 in high nibble). If present, skip it.
+    // Probe for an IP header, but only advance `off` if the header looks valid
+    // and there is enough room for an ICMP Echo header after it. Otherwise,
+    // leave `off = 0` and parse as a bare ICMP header.
     let v = buf[0] >> 4;
-    if v == 4 {
-        if buf.len() < 20 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "IPv4 header too short",
-            ));
-        }
+    if v == 4 && n >= 20 {
+        // Minimum IPv4 header is 20 bytes.
         let ihl = ((buf[0] & 0x0F) as usize) * 4; // IHL in 32-bit words
-        if ihl < 20 || buf.len() < ihl + 8 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid IPv4 IHL or short frame",
-            ));
+        // Advance only if IHL is sane, protocol==ICMP (1), and we have >= ihl+8 bytes.
+        if ihl >= 20 && n >= ihl + 8 && buf[9] == 1 {
+            off = ihl;
         }
-        // IPv4 protocol field must be ICMP (1)
-        if buf[9] != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "IPv4 next protocol is not ICMP",
-            ));
-        }
-        off = ihl;
-    } else if v == 6 {
-        // Some stacks may include the IPv6 header; many deliver only the ICMPv6 msg.
-        // If an IPv6 header seems present (version 6 and length >= 40), and Next Header is 58 (ICMPv6), skip 40.
-        if buf.len() >= 40 {
-            let next_header = buf[6]; // IPv6 Next Header
-            if next_header == 58 {
-                off = 40;
-            }
-        }
-        if buf.len() < off + 8 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Short ICMPv6 frame",
-            ));
+    } else if v == 6 && n >= 40 {
+        // If an IPv6 header is present (40 bytes) and Next Header is ICMPv6 (58),
+        // only advance if there is room for an 8-byte ICMPv6 Echo header.
+        let next_header = buf[6]; // IPv6 Next Header
+        if next_header == 58 && n >= 48 {
+            off = 40;
         }
     }
     // Else no IP header; assume buf starts at ICMP header.
@@ -260,36 +233,53 @@ fn send_icmp_echo(
 ) -> io::Result<usize> {
     static ICMP_SEQ: AtomicU16 = AtomicU16::new(1);
 
-    let mut buf: Vec<u8> = Vec::with_capacity(8 + payload.len());
     let seq = ICMP_SEQ.fetch_add(1, AtomOrdering::Relaxed);
+    let mut hdr = [0u8; 8];
 
     match dest {
         SocketAddr::V6(_) => {
-            // ICMPv6 Echo Request: type=128, code=0, checksum kernel-calculated (IPV6_CHECKSUM)
-            let t = 128u8 + (reply as u8); // 128=req, 129=rep
-            buf.extend_from_slice(&[t, 0u8, 0, 0]); // checksum filled by kernel if supported
-            buf.extend_from_slice(&ident.to_be_bytes());
-            buf.extend_from_slice(&seq.to_be_bytes());
-            buf.extend_from_slice(payload);
+            // ICMPv6 Echo: type=128(req)/129(rep), code=0, checksum handled by kernel on many OSes
+            hdr[0] = 128u8 + (reply as u8);
+            // hdr[1] = 0; hdr[2..4] left 0 for checksum (kernel may fill)
+            let idb = ident.to_be_bytes();
+            let sqb = seq.to_be_bytes();
+            hdr[4] = idb[0];
+            hdr[5] = idb[1];
+            hdr[6] = sqb[0];
+            hdr[7] = sqb[1];
+
+            let iov = [IoSlice::new(&hdr), IoSlice::new(payload)];
+            if connected {
+                sock.send_vectored(&iov)
+            } else {
+                let dest_sa = SockAddr::from(dest);
+                sock.send_to_vectored(&iov, &dest_sa)
+            }
         }
         _ => {
-            // ICMPv4 Echo Request: type=8, code=0, cksum (later), id, seq
-            let t = 8u8.wrapping_mul((!reply) as u8); // 8=req, 0=rep
-            buf.extend_from_slice(&[t, 0u8, 0, 0]); // type, code, checksum placeholder
-            buf.extend_from_slice(&ident.to_be_bytes());
-            buf.extend_from_slice(&seq.to_be_bytes());
-            buf.extend_from_slice(payload);
-            let cksum = checksum16(&buf);
-            buf[2] = (cksum >> 8) as u8;
-            buf[3] = (cksum & 0xFF) as u8;
-        }
-    }
+            // ICMPv4 Echo: type=8(req)/0(rep), code=0, checksum over header+payload
+            hdr[0] = 8u8 * ((!reply) as u8);
+            // hdr[1] = 0; hdr[2..4] = 0 (placeholder for checksum)
+            let idb = ident.to_be_bytes();
+            let sqb = seq.to_be_bytes();
+            hdr[4] = idb[0];
+            hdr[5] = idb[1];
+            hdr[6] = sqb[0];
+            hdr[7] = sqb[1];
 
-    if connected {
-        sock.send(&buf)
-    } else {
-        let dest_sa = SockAddr::from(dest);
-        sock.send_to(&buf, &dest_sa)
+            // Compute checksum without copying payload
+            let cksum = checksum16(&hdr, payload);
+            hdr[2] = (cksum >> 8) as u8;
+            hdr[3] = (cksum & 0xFF) as u8;
+
+            let iov = [IoSlice::new(&hdr), IoSlice::new(payload)];
+            if connected {
+                sock.send_vectored(&iov)
+            } else {
+                let dest_sa = SockAddr::from(dest);
+                sock.send_to_vectored(&iov, &dest_sa)
+            }
+        }
     }
 }
 
@@ -461,9 +451,18 @@ pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
 
 /// Compute the Internet Checksum (RFC 1071) for ICMPv4 header+payload.
 #[inline(always)]
-fn checksum16(data: &[u8]) -> u16 {
-    // 32-bit accumulator is fine with periodic carry fold; keep in u32 for register fit.
+fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
+    // Accumulate 16-bit words over header (with zeroed checksum) then payload.
     let mut sum: u32 = 0;
+
+    // Header: type,code ; checksum(0) ; ident ; seq
+    sum = sum
+        .wrapping_add(be16_32(hdr[0], hdr[1]))
+        .wrapping_add(be16_32(0, 0)) // checksum field treated as zero
+        .wrapping_add(be16_32(hdr[4], hdr[5]))
+        .wrapping_add(be16_32(hdr[6], hdr[7]));
+
+    // Payload
     let n = data.len();
 
     if n < 128 {
