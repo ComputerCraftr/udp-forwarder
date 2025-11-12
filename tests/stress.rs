@@ -5,6 +5,7 @@ use crate::common::{
     wait_for_listen_addr_from, wait_for_stats_json_from,
 };
 
+use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,9 +31,10 @@ fn stress_one_minute_ipv4(proto: &str) {
         spawn_udp_echo_server_v4()
             .expect("IPv4 echo server could not bind")
             .0
-            .to_string()
     } else {
-        "127.0.0.1:5".to_string()
+        "127.0.0.1:5"
+            .parse::<SocketAddr>()
+            .expect("IPv4 socket address could not be parsed")
     };
 
     // Spawn the app binary

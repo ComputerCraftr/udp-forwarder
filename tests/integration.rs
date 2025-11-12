@@ -8,7 +8,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
-fn enforce_max_payload_ipv4() {
+fn enforce_max_payload_ipv4_udp() {
+    enforce_max_payload_ipv4("UDP");
+}
+
+#[test]
+#[ignore] // requires root for raw sockets, pings localhost
+fn enforce_max_payload_ipv4_icmp() {
+    enforce_max_payload_ipv4("ICMP");
+}
+
+fn enforce_max_payload_ipv4(proto: &str) {
     // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
 
@@ -25,7 +35,7 @@ fn enforce_max_payload_ipv4() {
             .arg("--here")
             .arg("UDP:127.0.0.1:0")
             .arg("--there")
-            .arg(format!("UDP:{up_addr}"))
+            .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
             .arg("1")
             .arg("--on-timeout")
@@ -94,7 +104,17 @@ fn enforce_max_payload_ipv4() {
 }
 
 #[test]
-fn enforce_max_payload_ipv6() {
+fn enforce_max_payload_ipv6_udp() {
+    enforce_max_payload_ipv6("UDP");
+}
+
+#[test]
+#[ignore] // requires root for raw sockets, pings localhost
+fn enforce_max_payload_ipv6_icmp() {
+    enforce_max_payload_ipv6("ICMP");
+}
+
+fn enforce_max_payload_ipv6(proto: &str) {
     // If IPv6 loopback is unavailable on this host, skip gracefully
     // Client socket bound to ephemeral local port
     let Ok(client_sock) = bind_udp_v6_client() else {
@@ -116,7 +136,7 @@ fn enforce_max_payload_ipv6() {
             .arg("--here")
             .arg("UDP:[::1]:0")
             .arg("--there")
-            .arg(format!("UDP:{up_addr}"))
+            .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
             .arg("1")
             .arg("--on-timeout")
@@ -185,7 +205,17 @@ fn enforce_max_payload_ipv6() {
 }
 
 #[test]
-fn single_client_forwarding_ipv4() {
+fn single_client_forwarding_ipv4_udp() {
+    single_client_forwarding_ipv4("UDP");
+}
+
+#[test]
+#[ignore] // requires root for raw sockets, pings localhost
+fn single_client_forwarding_ipv4_icmp() {
+    single_client_forwarding_ipv4("ICMP");
+}
+
+fn single_client_forwarding_ipv4(proto: &str) {
     // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
     let client_local = client_sock
@@ -206,7 +236,7 @@ fn single_client_forwarding_ipv4() {
             .arg("--here")
             .arg("UDP:127.0.0.1:0")
             .arg("--there")
-            .arg(format!("UDP:{up_addr}"))
+            .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
             .arg("1")
             .arg("--on-timeout")
@@ -360,7 +390,17 @@ fn single_client_forwarding_ipv4() {
 }
 
 #[test]
-fn single_client_forwarding_ipv6() {
+fn single_client_forwarding_ipv6_udp() {
+    single_client_forwarding_ipv6("UDP");
+}
+
+#[test]
+#[ignore] // requires root for raw sockets, pings localhost
+fn single_client_forwarding_ipv6_icmp() {
+    single_client_forwarding_ipv6("ICMP");
+}
+
+fn single_client_forwarding_ipv6(proto: &str) {
     // If IPv6 loopback is unavailable on this host, skip gracefully
     // Client socket bound to ephemeral local port
     let Ok(client_sock) = bind_udp_v6_client() else {
@@ -386,7 +426,7 @@ fn single_client_forwarding_ipv6() {
             .arg("--here")
             .arg("UDP:[::1]:0")
             .arg("--there")
-            .arg(format!("UDP:{up_addr}"))
+            .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
             .arg("1")
             .arg("--on-timeout")
@@ -538,7 +578,17 @@ fn single_client_forwarding_ipv6() {
 }
 
 #[test]
-fn relock_after_timeout_drop_ipv4() {
+fn relock_after_timeout_drop_ipv4_udp() {
+    relock_after_timeout_drop_ipv4("UDP");
+}
+
+#[test]
+#[ignore] // requires root for raw sockets, pings localhost
+fn relock_after_timeout_drop_ipv4_icmp() {
+    relock_after_timeout_drop_ipv4("ICMP");
+}
+
+fn relock_after_timeout_drop_ipv4(proto: &str) {
     // Two client sockets (different ephemeral ports)
     let client_a = bind_udp_v4_client().expect("client_a IPv4 loopback not available");
     let client_b = bind_udp_v4_client().expect("client_b IPv4 loopback not available");
@@ -556,7 +606,7 @@ fn relock_after_timeout_drop_ipv4() {
             .arg("--here")
             .arg("UDP:127.0.0.1:22798")
             .arg("--there")
-            .arg(format!("UDP:{up_addr}"))
+            .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
             .arg("2")
             .arg("--on-timeout")
