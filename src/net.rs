@@ -462,23 +462,23 @@ pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
 /// Compute the Internet Checksum (RFC 1071) for ICMPv4 header+payload.
 #[inline(always)]
 fn checksum16(data: &[u8]) -> u16 {
-    // Sum 16-bit big-endian words using a 32-bit accumulator.
-    // Optimize for bounds-check elision via chunked iteration and mild unrolling.
+    // 32-bit accumulator is fine with periodic carry fold; keep in u32 for register fit.
     let mut sum: u32 = 0;
+    let n = data.len();
 
-    if data.len() < 128 {
-        // Small/latency path: iterate in 2-byte pairs without creating arrays.
+    if n < 128 {
+        // Small/latency path: tight 2-byte pairs loop; no arrays, no extra branches.
         let mut pairs = data.chunks_exact(2);
         for p in &mut pairs {
-            // `p` is guaranteed length 2 here.
+            // p has length 2 exactly
             sum = sum.wrapping_add(be16_32(p[0], p[1]));
         }
-        // If odd length, the last trailing byte is the high byte of the final word.
-        if let Some(&b) = pairs.remainder().get(0) {
-            sum = sum.wrapping_add((b as u32) << 8);
+        // Odd tail: last byte is the high byte of the final 16-bit word
+        if (n & 1) != 0 {
+            sum = sum.wrapping_add((data[n - 1] as u32) << 8);
         }
-    } else {
-        // Throughput path: mild unroll over 16-byte blocks (8 words) to reduce loop/branch overhead.
+    } else if n < 256 {
+        // Mid-size: 16-byte unroll (8 words per iter)
         let mut chunks16 = data.chunks_exact(16);
         for c in &mut chunks16 {
             sum = sum
@@ -491,19 +491,50 @@ fn checksum16(data: &[u8]) -> u16 {
                 .wrapping_add(be16_32(c[12], c[13]))
                 .wrapping_add(be16_32(c[14], c[15]));
         }
-        // Handle the remainder (0..15 bytes) in 2-byte pairs, then a possible final odd byte.
         let rem = chunks16.remainder();
         let mut pairs = rem.chunks_exact(2);
         for p in &mut pairs {
             sum = sum.wrapping_add(be16_32(p[0], p[1]));
         }
-        if let Some(&b) = pairs.remainder().get(0) {
-            sum = sum.wrapping_add((b as u32) << 8);
+        if (rem.len() & 1) != 0 {
+            sum = sum.wrapping_add((rem[rem.len() - 1] as u32) << 8);
+        }
+    } else {
+        // Throughput path for larger payloads.
+        // Use a 32-byte unroll when really large (reduces loop/branch overhead),
+        // else keep the 16-byte unroll to limit code size/pressure.
+        let mut chunks32 = data.chunks_exact(32); // 16 words per iter
+        for c in &mut chunks32 {
+            sum = sum
+                .wrapping_add(be16_32(c[0], c[1]))
+                .wrapping_add(be16_32(c[2], c[3]))
+                .wrapping_add(be16_32(c[4], c[5]))
+                .wrapping_add(be16_32(c[6], c[7]))
+                .wrapping_add(be16_32(c[8], c[9]))
+                .wrapping_add(be16_32(c[10], c[11]))
+                .wrapping_add(be16_32(c[12], c[13]))
+                .wrapping_add(be16_32(c[14], c[15]))
+                .wrapping_add(be16_32(c[16], c[17]))
+                .wrapping_add(be16_32(c[18], c[19]))
+                .wrapping_add(be16_32(c[20], c[21]))
+                .wrapping_add(be16_32(c[22], c[23]))
+                .wrapping_add(be16_32(c[24], c[25]))
+                .wrapping_add(be16_32(c[26], c[27]))
+                .wrapping_add(be16_32(c[28], c[29]))
+                .wrapping_add(be16_32(c[30], c[31]));
+        }
+        // Remainder after 32B blocks
+        let rem = chunks32.remainder();
+        let mut pairs = rem.chunks_exact(2);
+        for p in &mut pairs {
+            sum = sum.wrapping_add(be16_32(p[0], p[1]));
+        }
+        if (rem.len() & 1) != 0 {
+            sum = sum.wrapping_add((rem[rem.len() - 1] as u32) << 8);
         }
     }
 
-    // Fold to 16 bits (add carries) and one's complement.
-    // Two folds are sufficient because max sum fits within 18 bits after additions.
+    // Final fold to 16 bits and one's complement
     sum = (sum & 0xFFFF) + (sum >> 16);
     sum = (sum & 0xFFFF) + (sum >> 16);
     !(sum as u16)
