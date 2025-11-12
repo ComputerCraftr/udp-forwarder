@@ -121,14 +121,12 @@ pub fn send_payload(
             }
         }
     } else {
-        (buf, recv.port(), true)
+        (buf, recv.port(), c2u)
     };
-    // If this is the client->upstream direction and we received an ICMP Echo *reply*,
-    // drop it to avoid feedback loops (we only forward client requests upstream).
+    // If this is the client->upstream direction and we received an ICMP Echo *reply* or
+    // upstream->client and we received an ICMP Echo *request*, drop it to avoid feedback loops.
     // Also, ignore all packets with the wrong identity field.
-    if (c2u && matches!(src_proto, SupportedProtocol::ICMP) && !src_is_req)
-        || (src_ident != recv.port())
-    {
+    if c2u != src_is_req || src_ident != recv.port() {
         // Not an error; just ignore replies from the client side.
         return;
     }
