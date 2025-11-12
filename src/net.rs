@@ -9,6 +9,16 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomOrdering};
 use std::time::{Duration, Instant};
 
+#[inline(always)]
+fn be16_16(b0: u8, b1: u8) -> u16 {
+    ((b0 as u16) << 8) | (b1 as u16)
+}
+
+#[inline(always)]
+fn be16_32(b0: u8, b1: u8) -> u32 {
+    ((b0 as u32) << 8) | (b1 as u32)
+}
+
 /// Create a UDP socket bound to `bind_addr`.
 pub fn make_udp_socket(
     bind_addr: SocketAddr,
@@ -16,8 +26,8 @@ pub fn make_udp_socket(
     reuseaddr: bool,
 ) -> io::Result<Socket> {
     let domain = match bind_addr {
-        SocketAddr::V4(_) => Domain::IPV4,
         SocketAddr::V6(_) => Domain::IPV6,
+        _ => Domain::IPV4,
     };
 
     // Construct a socket from scratch
@@ -56,8 +66,8 @@ pub fn make_icmp_socket(
     // Use well-known protocol numbers to stay cross-platform (no libc on Windows)
     // IPv4: IPPROTO_ICMP = 1, IPv6: IPPROTO_ICMPV6 = 58
     let (domain, proto) = match bind_addr {
-        SocketAddr::V4(_) => (Domain::IPV4, Protocol::from(1)), // ICMPv4
         SocketAddr::V6(_) => (Domain::IPV6, Protocol::from(58)), // ICMPv6
+        _ => (Domain::IPV4, Protocol::from(1)),                  // ICMPv4
     };
 
     // Construct a raw socket
@@ -102,21 +112,21 @@ pub fn send_payload(
     debug: bool,
 ) {
     // Direction-local helpers
-    let stats_drop_oversize = |c2u, stats: &Stats| {
+    let stats_drop_oversize = |c2u: bool, stats: &Stats| {
         if c2u {
             stats.drop_c2u_oversize()
         } else {
             stats.drop_u2c_oversize()
         }
     };
-    let stats_err = |c2u, stats: &Stats| {
+    let stats_err = |c2u: bool, stats: &Stats| {
         if c2u {
             stats.c2u_err()
         } else {
             stats.u2c_err()
         }
     };
-    let stats_add = |c2u, stats: &Stats, len: usize, t_recv: Instant, t_send: Instant| {
+    let stats_add = |c2u: bool, stats: &Stats, len: usize, t_recv: Instant, t_send: Instant| {
         if c2u {
             stats.add_c2u(len as u64, t_recv, t_send)
         } else {
@@ -172,8 +182,7 @@ pub fn send_payload(
     // Send according to destination protocol and connection state.
     let send_res = match dst_proto {
         SupportedProtocol::ICMP => {
-            let dest_opt = if connected { None } else { Some(dest) };
-            send_icmp_echo(sock, dest_opt, dest.port(), !c2u, payload)
+            send_icmp_echo(sock, dest, dest.port(), !c2u, payload, connected)
         }
         _ => {
             if connected {
@@ -270,29 +279,37 @@ fn parse_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], u16, bool)> {
         ));
     }
     // Identifier is bytes 4..6 of the ICMP Echo header (for both v4 and v6 Echo).
-    let ident = u16::from_be_bytes([buf[off + 4], buf[off + 5]]);
+    let ident = be16_16(buf[off + 4], buf[off + 5]);
     let is_request = matches!(t, 8 | 128);
     Ok((&buf[off + 8..], ident, is_request))
 }
 
 /// Send an ICMP Echo Request or Reply (IPv4 or IPv6).
-/// If the socket is connected, pass `dest = None`. Otherwise, provide `Some(dest)`.
 fn send_icmp_echo(
     sock: &Socket,
-    dest_opt: Option<SocketAddr>,
+    dest: SocketAddr,
     ident: u16,
     reply: bool,
     payload: &[u8],
+    connected: bool,
 ) -> io::Result<usize> {
     static ICMP_SEQ: AtomicU16 = AtomicU16::new(1);
 
     let mut buf: Vec<u8> = Vec::with_capacity(8 + payload.len());
     let seq = ICMP_SEQ.fetch_add(1, AtomOrdering::Relaxed);
 
-    match sock.local_addr()?.as_socket() {
-        Some(SocketAddr::V4(_)) => {
+    match dest {
+        SocketAddr::V6(_) => {
+            // ICMPv6 Echo Request: type=128, code=0, checksum kernel-calculated (IPV6_CHECKSUM)
+            let t = 128u8 + (reply as u8); // 128=req, 129=rep
+            buf.extend_from_slice(&[t, 0u8, 0, 0]); // checksum filled by kernel if supported
+            buf.extend_from_slice(&ident.to_be_bytes());
+            buf.extend_from_slice(&seq.to_be_bytes());
+            buf.extend_from_slice(payload);
+        }
+        _ => {
             // ICMPv4 Echo Request: type=8, code=0, cksum (later), id, seq
-            let t = if reply { 0u8 } else { 8u8 };
+            let t = 8u8.wrapping_mul((!reply) as u8); // 8=req, 0=rep
             buf.extend_from_slice(&[t, 0u8, 0, 0]); // type, code, checksum placeholder
             buf.extend_from_slice(&ident.to_be_bytes());
             buf.extend_from_slice(&seq.to_be_bytes());
@@ -301,35 +318,21 @@ fn send_icmp_echo(
             buf[2] = (cksum >> 8) as u8;
             buf[3] = (cksum & 0xFF) as u8;
         }
-        Some(SocketAddr::V6(_)) => {
-            // ICMPv6 Echo Request: type=128, code=0, checksum kernel-calculated (IPV6_CHECKSUM)
-            let t = if reply { 129u8 } else { 128u8 };
-            buf.extend_from_slice(&[t, 0u8, 0, 0]); // checksum filled by kernel if supported
-            buf.extend_from_slice(&ident.to_be_bytes());
-            buf.extend_from_slice(&seq.to_be_bytes());
-            buf.extend_from_slice(payload);
-        }
-        None => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Socket domain must be IPv4 or IPv6",
-            ));
-        }
     }
 
-    if let Some(dest) = dest_opt {
+    if connected {
+        sock.send(&buf)
+    } else {
         let dest_sa = SockAddr::from(dest);
         sock.send_to(&buf, &dest_sa)
-    } else {
-        sock.send(&buf)
     }
 }
 
 /// Create and connect a socket suitable for forwarding data to `dest`.
 pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> io::Result<Socket> {
     let bind_addr = match dest {
-        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
     };
 
     let sock = match proto {
@@ -495,22 +498,51 @@ pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
 }
 
 /// Compute the Internet Checksum (RFC 1071) for ICMPv4 header+payload.
-#[inline]
-fn checksum16(mut data: &[u8]) -> u16 {
+#[inline(always)]
+fn checksum16(data: &[u8]) -> u16 {
+    // Sum 16-bit big-endian words using a 32-bit accumulator.
+    // Optimize for bounds-check elision via chunked iteration and mild unrolling.
     let mut sum: u32 = 0;
-    // Sum 16-bit words
-    while data.len() >= 2 {
-        let word = u16::from_be_bytes([data[0], data[1]]) as u32;
-        sum = sum.wrapping_add(word);
-        data = &data[2..];
+
+    if data.len() < 128 {
+        // Small/latency path: iterate in 2-byte pairs without creating arrays.
+        let mut pairs = data.chunks_exact(2);
+        for p in &mut pairs {
+            // `p` is guaranteed length 2 here.
+            sum = sum.wrapping_add(be16_32(p[0], p[1]));
+        }
+        // If odd length, the last trailing byte is the high byte of the final word.
+        if let Some(&b) = pairs.remainder().get(0) {
+            sum = sum.wrapping_add((b as u32) << 8);
+        }
+    } else {
+        // Throughput path: mild unroll over 16-byte blocks (8 words) to reduce loop/branch overhead.
+        let mut chunks16 = data.chunks_exact(16);
+        for c in &mut chunks16 {
+            sum = sum
+                .wrapping_add(be16_32(c[0], c[1]))
+                .wrapping_add(be16_32(c[2], c[3]))
+                .wrapping_add(be16_32(c[4], c[5]))
+                .wrapping_add(be16_32(c[6], c[7]))
+                .wrapping_add(be16_32(c[8], c[9]))
+                .wrapping_add(be16_32(c[10], c[11]))
+                .wrapping_add(be16_32(c[12], c[13]))
+                .wrapping_add(be16_32(c[14], c[15]));
+        }
+        // Handle the remainder (0..15 bytes) in 2-byte pairs, then a possible final odd byte.
+        let rem = chunks16.remainder();
+        let mut pairs = rem.chunks_exact(2);
+        for p in &mut pairs {
+            sum = sum.wrapping_add(be16_32(p[0], p[1]));
+        }
+        if let Some(&b) = pairs.remainder().get(0) {
+            sum = sum.wrapping_add((b as u32) << 8);
+        }
     }
-    // Add trailing byte
-    if let Some(&b) = data.first() {
-        sum = sum.wrapping_add((b as u32) << 8);
-    }
-    // Fold to 16 bits and one's complement
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
+
+    // Fold to 16 bits (add carries) and one's complement.
+    // Two folds are sufficient because max sum fits within 18 bits after additions.
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = (sum & 0xFFFF) + (sum >> 16);
     !(sum as u16)
 }

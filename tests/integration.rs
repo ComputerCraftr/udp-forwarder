@@ -13,8 +13,9 @@ fn enforce_max_payload_ipv4() {
     let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
 
     // Upstream echo server
-    let (up_addr, _up_thread) =
-        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
+    let up_addr = spawn_udp_echo_server_v4()
+        .expect("IPv4 echo server could not bind")
+        .0;
 
     // Spawn the app binary
     let bin = find_app_bin().expect("could not find app binary");
@@ -192,8 +193,9 @@ fn single_client_forwarding_ipv4() {
         .expect("IPv4 loopback address not available");
 
     // Upstream echo server
-    let (up_addr, _up_thread) =
-        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
+    let up_addr = spawn_udp_echo_server_v4()
+        .expect("IPv4 echo server could not bind")
+        .0;
 
     // Spawn the app binary
     let bin = find_app_bin().expect("could not find app binary");
@@ -542,8 +544,9 @@ fn relock_after_timeout_drop_ipv4() {
     let client_b = bind_udp_v4_client().expect("client_b IPv4 loopback not available");
 
     // Upstream echo server
-    let (up_addr, _up_thread) =
-        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
+    let up_addr = spawn_udp_echo_server_v4()
+        .expect("IPv4 echo server could not bind")
+        .0;
 
     // Spawn the forwarder with short timeout and on-timeout=drop
     let bin = find_app_bin().expect("could not find app binary");

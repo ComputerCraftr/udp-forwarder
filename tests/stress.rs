@@ -10,14 +10,30 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore] // opt-in: `cargo test --test stress -- --ignored --nocapture`
-fn stress_one_minute_ipv4() {
+#[ignore] // opt-in: `cargo test --test stress -- --ignored`
+fn stress_one_minute_ipv4_udp() {
+    stress_one_minute_ipv4("UDP");
+}
+
+#[test]
+#[ignore] // requires root for raw sockets, pings localhost
+fn stress_one_minute_ipv4_icmp() {
+    stress_one_minute_ipv4("ICMP");
+}
+
+fn stress_one_minute_ipv4(proto: &str) {
     // Client socket bound to ephemeral local port
     let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
 
     // Upstream echo server
-    let (up_addr, _up_thread) =
-        spawn_udp_echo_server_v4().expect("IPv4 echo server could not bind");
+    let up_addr = if !proto.eq_ignore_ascii_case("icmp") {
+        spawn_udp_echo_server_v4()
+            .expect("IPv4 echo server could not bind")
+            .0
+            .to_string()
+    } else {
+        "127.0.0.1:5".to_string()
+    };
 
     // Spawn the app binary
     let bin = find_app_bin().expect("could not find app binary");
@@ -28,7 +44,7 @@ fn stress_one_minute_ipv4() {
             .arg("--here")
             .arg("UDP:127.0.0.1:0")
             .arg("--there")
-            .arg(format!("UDP:{up_addr}"))
+            .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
             .arg("2")
             .arg("--on-timeout")
