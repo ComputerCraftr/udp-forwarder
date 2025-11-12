@@ -5,7 +5,7 @@ mod upstream;
 
 use cli::{Config, TimeoutAction, parse_args};
 use net::{make_socket, send_payload, udp_disconnect};
-use socket2::Socket;
+use socket2::{SockAddr, Socket};
 use stats::Stats;
 use upstream::UpstreamManager;
 
@@ -40,19 +40,23 @@ fn run_client_to_upstream_thread(
     let mut buf = vec![0u8; 65535];
     // Cache upstream socket and destination; refresh only when version changes
     let (mut up_sock, mut dest, mut ver) = upstream_mgr.refresh_handles();
+    let mut dest_sa = SockAddr::from(dest);
     // Once locked, connect client socket to the peer and switch to recv()
     let mut local_unconnected_client: Option<SocketAddr> = Some(cfg.listen_addr);
     loop {
         // Cheap hot-path check: only refresh when manager version changes
         if ver != upstream_mgr.version() {
             (up_sock, dest, ver) = upstream_mgr.refresh_handles();
+            dest_sa = SockAddr::from(dest);
         }
         if local_unconnected_client.is_none() {
             // Connected fast path: only packets from the locked client are delivered
             match client_sock.recv(as_uninit_mut(&mut buf)) {
                 Ok(len) => {
                     let t_recv = Instant::now();
-                    if locked.load(AtomOrdering::Relaxed) {
+                    if !locked.load(AtomOrdering::Relaxed) {
+                        local_unconnected_client = Some(cfg.listen_addr);
+                    } else {
                         send_payload(
                             true,
                             true,
@@ -64,11 +68,10 @@ fn run_client_to_upstream_thread(
                             &up_sock,
                             &buf[..len],
                             dest,
+                            &dest_sa,
                             cfg.listen_addr,
                             false,
                         );
-                    } else {
-                        local_unconnected_client = Some(cfg.listen_addr);
                     }
                 }
                 Err(ref e)
@@ -107,6 +110,7 @@ fn run_client_to_upstream_thread(
                             up_sock = new_sock;
                             dest = new_dest;
                             ver = new_ver;
+                            dest_sa = SockAddr::from(dest);
                         }
                     }
 
@@ -123,6 +127,7 @@ fn run_client_to_upstream_thread(
                             &up_sock,
                             &buf[..len],
                             dest,
+                            &dest_sa,
                             cfg.listen_addr,
                             false,
                         );
@@ -154,7 +159,7 @@ fn run_upstream_to_client_thread(
     // Cache upstream socket and destination; refresh only when version changes
     let (mut up_sock, mut up_sock_addr, mut ver) = upstream_mgr.refresh_handles();
     // Local cache of the locked client destination for fast send
-    let mut local_dest: Option<SocketAddr> = None;
+    let mut local_dest: Option<(SocketAddr, SockAddr)> = None;
     loop {
         // Cheap hot-path check: refresh local handles only when version changes
         if ver != upstream_mgr.version() {
@@ -166,11 +171,25 @@ fn run_upstream_to_client_thread(
                 // Refresh local cached destination when global lock state changes
                 if !locked.load(AtomOrdering::Relaxed) {
                     local_dest = None;
-                } else if let Some(dest) = local_dest.or_else(|| {
-                    let v = *client_peer.lock().unwrap();
-                    local_dest = v;
-                    v
-                }) {
+                } else if let Some((dest, dest_sa)) = local_dest.as_ref() {
+                    send_payload(
+                        false,
+                        true,
+                        t_start,
+                        t_recv,
+                        cfg,
+                        stats,
+                        last_seen_ns,
+                        client_sock,
+                        &buf[..len],
+                        *dest,
+                        &dest_sa,
+                        up_sock_addr,
+                        false,
+                    );
+                } else if let Some(dest) = *client_peer.lock().unwrap() {
+                    let dest_sa = SockAddr::from(dest);
+
                     send_payload(
                         false,
                         true,
@@ -182,9 +201,12 @@ fn run_upstream_to_client_thread(
                         client_sock,
                         &buf[..len],
                         dest,
+                        &dest_sa,
                         up_sock_addr,
                         false,
                     );
+
+                    local_dest = Some((dest, dest_sa));
                 }
             }
             Err(ref e)

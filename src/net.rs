@@ -75,6 +75,7 @@ pub fn send_payload(
     sock: &Socket,
     buf: &[u8],
     dest: SocketAddr,
+    dest_sa: &SockAddr,
     recv: SocketAddr,
     debug: bool,
 ) {
@@ -132,13 +133,12 @@ pub fn send_payload(
     // Send according to destination protocol and connection state.
     let send_res = match dst_proto {
         SupportedProtocol::ICMP => {
-            send_icmp_echo(sock, dest, dest.port(), !c2u, payload, connected)
+            send_icmp_echo(sock, dest, dest_sa, dest.port(), !c2u, payload, connected)
         }
         _ => {
             if connected {
                 sock.send(payload)
             } else {
-                let dest_sa = SockAddr::from(dest);
                 sock.send_to(payload, &dest_sa)
             }
         }
@@ -223,9 +223,11 @@ fn parse_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], u16, bool)> {
 }
 
 /// Send an ICMP Echo Request or Reply (IPv4 or IPv6).
+#[inline(always)]
 fn send_icmp_echo(
     sock: &Socket,
     dest: SocketAddr,
+    dest_sa: &SockAddr,
     ident: u16,
     reply: bool,
     payload: &[u8],
@@ -252,7 +254,6 @@ fn send_icmp_echo(
             if connected {
                 sock.send_vectored(&iov)
             } else {
-                let dest_sa = SockAddr::from(dest);
                 sock.send_to_vectored(&iov, &dest_sa)
             }
         }
@@ -276,7 +277,6 @@ fn send_icmp_echo(
             if connected {
                 sock.send_vectored(&iov)
             } else {
-                let dest_sa = SockAddr::from(dest);
                 sock.send_to_vectored(&iov, &dest_sa)
             }
         }
