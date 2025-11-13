@@ -9,6 +9,8 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomOrdering};
 use std::time::{Duration, Instant};
 
+static ZERO_ARRAY: [u8; 1] = [0];
+
 #[inline(always)]
 fn be16_16(b0: u8, b1: u8) -> u16 {
     ((b0 as u16) << 8) | (b1 as u16)
@@ -86,35 +88,34 @@ pub fn send_payload(
     };
 
     // If the source side was ICMP, strip the 8-byte Echo header before forwarding.
-    let (payload, src_ident, src_is_req) = if matches!(src_proto, SupportedProtocol::ICMP) {
-        match parse_icmp_echo_header(buf) {
-            Ok((p, ident, is_req)) => (p, ident, is_req),
-            Err(e) => {
-                if debug {
-                    eprintln!("Dropping packet: Invalid ICMP echo frame ({e})");
-                }
-                if c2u {
-                    stats.c2u_err()
-                } else {
-                    stats.u2c_err()
-                }
-                return;
-            }
-        }
-    } else {
-        (buf, recv.port(), c2u)
-    };
-    // If this is the client->upstream direction and we received an ICMP Echo *reply* or
-    // upstream->client and we received an ICMP Echo *request*, drop it to avoid feedback loops.
-    // Also, ignore all packets with the wrong identity field.
-    if c2u != src_is_req || src_ident != recv.port() {
-        // Not an error; just ignore replies from the client side.
-        return;
-    }
+    let (icmp_success, payload, src_ident, src_is_req) =
+        if matches!(src_proto, SupportedProtocol::ICMP) {
+            parse_icmp_echo_header(buf)
+        } else {
+            (true, buf, recv.port(), c2u)
+        };
 
     // Size check on the normalized payload.
     let len = payload.len();
-    if cfg.max_payload != 0 && len > cfg.max_payload {
+
+    if !icmp_success {
+        if debug {
+            eprintln!("Dropping packet: Invalid or truncated ICMP Echo header");
+        }
+        if c2u {
+            stats.c2u_err()
+        } else {
+            stats.u2c_err()
+        }
+        return;
+    } else if c2u != src_is_req || src_ident != recv.port() {
+        // If this is the client->upstream direction and we received an ICMP Echo *reply* or
+        // upstream->client and we received an ICMP Echo *request*, drop it to avoid feedback loops.
+        // Also, ignore all packets with the wrong identity field.
+
+        // Not an error; just ignore replies from the client side.
+        return;
+    } else if cfg.max_payload != 0 && len > cfg.max_payload {
         if debug {
             eprintln!(
                 "Dropping packet: {} bytes exceeds max {}",
@@ -166,59 +167,95 @@ pub fn send_payload(
     }
 }
 
+/// Some OSes (notably Linux for IPv4 raw sockets) deliver the full IP header
+/// followed by the ICMP message. Others deliver only the ICMP message.
+///
+/// This helper normalizes those cases by:
+///   * detecting an IPv4/IPv6 header using only header-structure fields
+///   * advancing `off` to the start of the ICMP Echo header *only* when a full
+///     IP header and 8-byte Echo header fit in the buffer
+///   * treating the buffer as starting at the ICMP header when no valid IP
+///     header is detected
+///   * validating ICMP(v6) Echo type/code (v4: 8/0; v6: 128/129 with code 0)
+///   * stripping the 8-byte ICMP Echo header and returning the remaining payload
+///
+/// The return tuple is `(ok, payload, ident, is_request)` where:
+///   * `ok` is `true` iff a complete ICMP(v6) Echo {request, reply} header with
+///     code 0 was found and validated.
+///   * `payload` is the slice after the Echo header when `ok == true`, or an
+///     empty slice otherwise.
+///   * `ident` is the Echo identifier field (undefined when `ok == false`).
+///   * `is_request` is `true` for Echo Request and `false` for Echo Reply
+///     (undefined when `ok == false`).
+///
+/// The mask-based arithmetic (`is_v4`, `is_v6`, `room_v4`, `room_v6`,
+/// `have_hdr`, `success`) is intentional: this function runs on the ICMP
+/// hot path and has been shaped to minimize unpredictable branches and bounds
+/// checks. If you change it, re-benchmark under load before simplifying the
+/// control flow.
 #[inline]
-fn parse_icmp_echo_header(buf: &[u8]) -> io::Result<(&[u8], u16, bool)> {
-    // Some OSes (notably Linux for IPv4 raw sockets) deliver the full IP header
-    // followed by the ICMP message. Others deliver only the ICMP message.
-    // We normalize by skipping an IP header if present, validate it's ICMP(v6),
-    // then verify Echo type/code and strip the 8-byte ICMP Echo header.
+fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, bool) {
+    let n = payload.len();
+    // Probe bytes: read 0,6,9 only when available; otherwise treat as zeroes.
+    let has0 = (n >= 1) as usize;
+    let buf = if has0 != 0 { payload } else { &ZERO_ARRAY };
+    let has9 = (n >= 10) as usize; // need index 6+9
+    let b9 = buf[9 * has9];
+    let b6 = buf[6 * has9];
+    let b0 = buf[0];
 
-    let n = buf.len();
-    // Early absolute minimum: ICMP header is 8 bytes (with or without IP header present)
-    if n < 8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ICMP frame too short",
-        ));
-    }
+    // Version nibble and IPv4 IHL (header length in bytes, from 4-byte words)
+    let ver = (b0 >> 4) as usize;
+    let ihl = ((b0 as usize) & 0x0F) << 2;
 
-    let mut off = 0usize;
-    // Probe for an IP header, but only advance `off` if the header looks valid
-    // and there is enough room for an ICMP Echo header after it. Otherwise,
-    // leave `off = 0` and parse as a bare ICMP header.
-    let v = buf[0] >> 4;
-    if v == 4 && n >= 20 {
-        // Minimum IPv4 header is 20 bytes.
-        let ihl = ((buf[0] & 0x0F) as usize) * 4; // IHL in 32-bit words
-        // Advance only if IHL is sane, protocol==ICMP (1), and we have >= ihl+8 bytes.
-        if ihl >= 20 && n >= ihl + 8 && buf[9] == 1 {
-            off = ihl;
-        }
-    } else if v == 6 && n >= 40 {
-        // If an IPv6 header is present (40 bytes) and Next Header is ICMPv6 (58),
-        // only advance if there is room for an 8-byte ICMPv6 Echo header.
-        let next_header = buf[6]; // IPv6 Next Header
-        if next_header == 58 && n >= 48 {
-            off = 40;
-        }
-    }
-    // Else no IP header; assume buf starts at ICMP header.
+    // Boolean masks as 0/1 integers
+    let is_v4 = (ver == 4) as usize;
+    let is_v6 = (ver == 6) as usize;
 
-    // Validate ICMP/ICMPv6 Echo [request/reply] and strip 8-byte header.
-    // ICMPv4 Echo: type=8 (req) / 0 (reply), code=0
-    // ICMPv6 Echo: type=128 (req) / 129 (reply), code=0
-    let t = buf[off];
-    let c = buf[off + 1];
-    if c != 0 || !matches!(t, 8 | 0 | 128 | 129) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Unexpected ICMP type/code: {t}/{c}"),
-        ));
-    }
+    // Sanity / length masks (0 or 1).
+    // With a sane IHL (>=20), `room_v4` implies n >= ihl + 8 >= 28 total bytes
+    // (IPv4 header + 8-byte ICMP Echo header).
+    let sane_ihl = (ihl >= 20) as usize;
+    let proto_icmp = (b9 == 1) as usize; // IPv4 protocol == ICMP
+    let room_v4 = (n >= ihl + 8) as usize; // requires sane_ihl to be useful
+
+    // For IPv6, `room_v6` (n >= 48) ensures a 40-byte IPv6 header plus 8-byte ICMPv6 Echo fits.
+    let next_icmp6 = (b6 == 58) as usize; // IPv6 Next Header == ICMPv6
+    let room_v6 = (n >= 48) as usize; // 40 (IPv6) + 8 (ICMPv6)
+
+    // Compute offsets multiplied by masks (either ihl or 40, else 0).
+    // If no header path matches, both masks are 0 and `off` stays 0
+    // (treat buffer as starting at the ICMP header).
+    let off_v4 = ihl * (is_v4 & sane_ihl & proto_icmp & room_v4);
+    let off_v6 = 40usize * (is_v6 & next_icmp6 & room_v6);
+
+    // Since ver is either 4 or 6 (or neither), these are mutually exclusive; adding is safe.
+    let off = off_v4 + off_v6;
+
+    // Consolidated validation: `have_hdr` gates all ICMP header reads.
+    // When `have_hdr == 0`, indices collapse to 0 and we read buf[0] (harmless).
+    // When `have_hdr == 1`, we know an 8-byte Echo header fits at `off`.
+    let have_hdr = (n >= off + 8) as usize;
+    let icmp_code = buf[(off + 1) * have_hdr];
+    let icmp_type = buf[off * have_hdr];
+
+    // `success` gates all further ICMP-field indexing and the payload slice bounds.
+    let success_bool = have_hdr == 1 && icmp_code == 0 && matches!(icmp_type, 8 | 0 | 128 | 129);
+    let success = success_bool as usize;
+
     // Identifier is bytes 4..6 of the ICMP Echo header (for both v4 and v6 Echo).
-    let ident = be16_16(buf[off + 4], buf[off + 5]);
-    let is_request = matches!(t, 8 | 128);
-    Ok((&buf[off + 8..], ident, is_request))
+    let ident_b1 = buf[(off + 5) * success];
+    let ident_b0 = buf[(off + 4) * success];
+    let ident = be16_16(ident_b0, ident_b1);
+    let is_request = matches!(icmp_type, 8 | 128);
+
+    // On failure, `success == 0` collapses the slice to 0..0 (empty) rather than indexing at `off`.
+    (
+        success_bool,
+        &buf[(off + 8) * success..n * success],
+        ident,
+        is_request,
+    )
 }
 
 /// Send an ICMP Echo Request or Reply (IPv4 or IPv6).
