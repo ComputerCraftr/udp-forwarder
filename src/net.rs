@@ -9,6 +9,7 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomOrdering};
 use std::time::{Duration, Instant};
 
+static ICMP_SEQ: AtomicU16 = AtomicU16::new(1);
 static ZERO_ARRAY: [u8; 1] = [0];
 
 #[inline(always)]
@@ -229,8 +230,8 @@ fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, bool) {
     let off_v4 = ihl * (is_v4 & sane_ihl & proto_icmp & room_v4);
     let off_v6 = 40usize * (is_v6 & next_icmp6 & room_v6);
 
-    // Since ver is either 4 or 6 (or neither), these are mutually exclusive; adding is safe.
-    let off = off_v4 + off_v6;
+    // Since ver is either 4 or 6 (or neither), these are mutually exclusive; 'or' is safe.
+    let off = off_v4 | off_v6;
 
     // Consolidated validation: `have_hdr` gates all ICMP header reads.
     // When `have_hdr == 0`, indices collapse to 0 and we read buf[0] (harmless).
@@ -268,53 +269,40 @@ fn send_icmp_echo(
     payload: &[u8],
     connected: bool,
 ) -> io::Result<usize> {
-    static ICMP_SEQ: AtomicU16 = AtomicU16::new(1);
-
     let seq = ICMP_SEQ.fetch_add(1, AtomOrdering::Relaxed);
     let mut hdr = [0u8; 8];
 
-    match dest {
+    let idb = ident.to_be_bytes();
+    let sqb = seq.to_be_bytes();
+
+    // hdr[1] = 0; hdr[2..4] = 0 (placeholder for checksum)
+    hdr[4] = idb[0];
+    hdr[5] = idb[1];
+    hdr[6] = sqb[0];
+    hdr[7] = sqb[1];
+
+    let cksum = match dest {
+        // ICMPv6 Echo: type=128(req)/129(rep), code=0, checksum handled by kernel on many OSes
         SocketAddr::V6(_) => {
-            // ICMPv6 Echo: type=128(req)/129(rep), code=0, checksum handled by kernel on many OSes
-            hdr[0] = 128u8 + (reply as u8);
-            // hdr[1] = 0; hdr[2..4] left 0 for checksum (kernel may fill)
-            let idb = ident.to_be_bytes();
-            let sqb = seq.to_be_bytes();
-            hdr[4] = idb[0];
-            hdr[5] = idb[1];
-            hdr[6] = sqb[0];
-            hdr[7] = sqb[1];
-
-            let iov = [IoSlice::new(&hdr), IoSlice::new(payload)];
-            if connected {
-                sock.send_vectored(&iov)
-            } else {
-                sock.send_to_vectored(&iov, &dest_sa)
-            }
+            hdr[0] = 128u8 | (reply as u8);
+            0u16
         }
+        // ICMPv4 Echo: type=8(req)/0(rep), code=0, checksum over header+payload
         _ => {
-            // ICMPv4 Echo: type=8(req)/0(rep), code=0, checksum over header+payload
-            hdr[0] = 8u8 * ((!reply) as u8);
-            // hdr[1] = 0; hdr[2..4] = 0 (placeholder for checksum)
-            let idb = ident.to_be_bytes();
-            let sqb = seq.to_be_bytes();
-            hdr[4] = idb[0];
-            hdr[5] = idb[1];
-            hdr[6] = sqb[0];
-            hdr[7] = sqb[1];
-
+            hdr[0] = 8u8 * (!reply as u8);
             // Compute checksum without copying payload
-            let cksum = checksum16(&hdr, payload);
-            hdr[2] = (cksum >> 8) as u8;
-            hdr[3] = (cksum & 0xFF) as u8;
-
-            let iov = [IoSlice::new(&hdr), IoSlice::new(payload)];
-            if connected {
-                sock.send_vectored(&iov)
-            } else {
-                sock.send_to_vectored(&iov, &dest_sa)
-            }
+            checksum16(&hdr, payload)
         }
+    };
+
+    hdr[2] = (cksum >> 8) as u8;
+    hdr[3] = (cksum & 0xFF) as u8;
+
+    let iov = [IoSlice::new(&hdr), IoSlice::new(payload)];
+    if connected {
+        sock.send_vectored(&iov)
+    } else {
+        sock.send_to_vectored(&iov, &dest_sa)
     }
 }
 
@@ -500,17 +488,9 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
     // Payload
     let n = data.len();
 
-    if n < 128 {
+    let mut pairs = if n < 128 {
         // Small/latency path: tight 2-byte pairs loop; no arrays, no extra branches.
-        let mut pairs = data.chunks_exact(2);
-        for p in &mut pairs {
-            // p has length 2 exactly
-            sum = sum.wrapping_add(be16_32(p[0], p[1]));
-        }
-        // Odd tail: last byte is the high byte of the final 16-bit word
-        if (n & 1) != 0 {
-            sum = sum.wrapping_add((data[n - 1] as u32) << 8);
-        }
+        data.chunks_exact(2)
     } else if n < 256 {
         // Mid-size: 16-byte unroll (8 words per iter)
         let mut chunks16 = data.chunks_exact(16);
@@ -526,13 +506,7 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
                 .wrapping_add(be16_32(c[14], c[15]));
         }
         let rem = chunks16.remainder();
-        let mut pairs = rem.chunks_exact(2);
-        for p in &mut pairs {
-            sum = sum.wrapping_add(be16_32(p[0], p[1]));
-        }
-        if (rem.len() & 1) != 0 {
-            sum = sum.wrapping_add((rem[rem.len() - 1] as u32) << 8);
-        }
+        rem.chunks_exact(2)
     } else {
         // Throughput path for larger payloads.
         // Use a 32-byte unroll when really large (reduces loop/branch overhead),
@@ -559,14 +533,18 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
         }
         // Remainder after 32B blocks
         let rem = chunks32.remainder();
-        let mut pairs = rem.chunks_exact(2);
-        for p in &mut pairs {
-            sum = sum.wrapping_add(be16_32(p[0], p[1]));
-        }
-        if (rem.len() & 1) != 0 {
-            sum = sum.wrapping_add((rem[rem.len() - 1] as u32) << 8);
-        }
+        rem.chunks_exact(2)
+    };
+
+    for p in &mut pairs {
+        // p has length 2 exactly
+        sum = sum.wrapping_add(be16_32(p[0], p[1]));
     }
+    // Odd tail: last byte is the high byte of the final 16-bit word
+    let odd_bool = (n & 1) != 0;
+    let odd = odd_bool as u32;
+    let even = !odd_bool as u32;
+    sum = sum.wrapping_add((data[n - 1] as u32) << 8) * odd | sum * even;
 
     // Final fold to 16 bits and one's complement
     sum = (sum & 0xFFFF) + (sum >> 16);
