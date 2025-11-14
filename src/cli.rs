@@ -49,6 +49,10 @@ pub struct Config {
     pub stats_interval_mins: u32,          // JSON stats print interval
     pub max_payload: usize,                // optional user-specified MTU/payload limit
     pub reresolve_secs: u64,               // 0 = disabled
+    #[cfg(unix)]
+    pub run_as_user: Option<String>,
+    #[cfg(unix)]
+    pub run_as_group: Option<String>,
 }
 
 pub fn parse_args() -> Config {
@@ -64,6 +68,8 @@ pub fn parse_args() -> Config {
              \t--stats-interval-mins N  JSON stats print interval minutes (default: 60)\n\
              \t--max-payload N          Payload limit (0=unlimited)\n\
              \t--reresolve-secs N       Re-resolve upstream host every N seconds (0=disabled)\n\
+             \t--user NAME              Drop privileges to this user (Unix only)\n\
+             \t--group NAME             Drop privileges to this group (Unix only)\n\
              \t-h, --help               Show this help and exit"
         );
         process::exit(code)
@@ -148,6 +154,11 @@ pub fn parse_args() -> Config {
     let mut max_payload: Option<usize> = None; // unlimited if None
     let mut reresolve_secs: Option<u64> = None; // 0 if None
 
+    #[cfg(unix)]
+    let mut run_as_user: Option<String> = None;
+    #[cfg(unix)]
+    let mut run_as_group: Option<String> = None;
+
     // Parse flags using an iterator (no manual index math)
     let mut args_iter = env::args().skip(1).peekable();
     while let Some(arg) = args_iter.next() {
@@ -194,6 +205,16 @@ pub fn parse_args() -> Config {
                 let parsed = parse_num::<u64>(&val, "--reresolve-secs");
                 set_once(&mut reresolve_secs, parsed, "--reresolve-secs");
             }
+            #[cfg(unix)]
+            "--user" => {
+                let val = get_next_value(&mut args_iter, "--user");
+                set_once(&mut run_as_user, val, "--user");
+            }
+            #[cfg(unix)]
+            "--group" => {
+                let val = get_next_value(&mut args_iter, "--group");
+                set_once(&mut run_as_group, val, "--group");
+            }
             "-h" | "--help" => print_usage_and_exit(0),
             other => {
                 eprintln!("unknown arg: {other}");
@@ -234,5 +255,9 @@ pub fn parse_args() -> Config {
         stats_interval_mins,
         max_payload,
         reresolve_secs,
+        #[cfg(unix)]
+        run_as_user,
+        #[cfg(unix)]
+        run_as_group,
     }
 }

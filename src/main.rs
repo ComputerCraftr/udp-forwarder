@@ -5,6 +5,8 @@ mod upstream;
 
 use cli::{Config, TimeoutAction, parse_args};
 use net::{make_socket, send_payload, udp_disconnect};
+#[cfg(unix)]
+use nix::unistd::{self, Group, User};
 use socket2::{SockAddr, Socket};
 use stats::Stats;
 use upstream::UpstreamManager;
@@ -290,14 +292,18 @@ fn main() -> io::Result<()> {
     let t_start = Instant::now();
     let cfg = Arc::new(parse_args());
 
+    // Listener for the local client (this may require root for low ports)
+    let client_sock = Arc::new(make_socket(cfg.listen_addr, cfg.listen_proto, 5000, false)?);
+
     // Initial upstream resolution + manager
     let upstream_mgr = Arc::new(UpstreamManager::new(
         &cfg.upstream_addr,
         cfg.upstream_proto,
     )?);
 
-    // Listener for the local client
-    let client_sock = Arc::new(make_socket(cfg.listen_addr, cfg.listen_proto, 5000, false)?);
+    // Drop privileges (Unix) now that the privileged socket is bound.
+    #[cfg(unix)]
+    drop_privileges(&cfg)?;
 
     // Single-client state
     let client_peer = Arc::new(Mutex::new(None));
@@ -414,4 +420,80 @@ fn main() -> io::Result<()> {
     loop {
         thread::park();
     }
+}
+
+#[cfg(unix)]
+fn drop_privileges(cfg: &Config) -> io::Result<()> {
+    if !unistd::geteuid().is_root() {
+        // Not root: ignore any requested run-as flags.
+        if cfg.run_as_user.is_some() || cfg.run_as_group.is_some() {
+            eprintln!(
+                "Warning: --user/--group specified but process is not running as root; ignoring"
+            );
+        }
+        return Ok(());
+    }
+
+    let user_name = cfg.run_as_user.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "must specify --user when running as root",
+        )
+    })?;
+
+    let user = User::from_name(user_name)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("user lookup failed for {user_name}: {e}"),
+            )
+        })?
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, format!("user {user_name} not found"))
+        })?;
+
+    // Determine primary group: explicit --group overrides user's primary group.
+    let primary_gid = if let Some(group_name) = cfg.run_as_group.as_ref() {
+        let grp = Group::from_name(group_name)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("group lookup failed for {group_name}: {e}"),
+                )
+            })?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("group {group_name} not found"),
+                )
+            })?;
+        grp.gid
+    } else {
+        user.gid
+    };
+
+    let uid = user.uid;
+    let gid = primary_gid;
+
+    // Drop supplementary groups entirely to avoid retaining root-level groups.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    {
+        let empty: &[nix::unistd::Gid] = &[];
+        unistd::setgroups(empty)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("setgroups failed: {e}")))?;
+    }
+
+    // Order: primary gid -> uid
+    unistd::setgid(gid)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("setgid failed: {e}")))?;
+    unistd::setuid(uid)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("setuid failed: {e}")))?;
+
+    println!(
+        "Dropped privileges to user '{}' (uid={}, gid={})",
+        user.name,
+        uid.as_raw(),
+        gid.as_raw()
+    );
+    Ok(())
 }
