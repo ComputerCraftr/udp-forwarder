@@ -478,6 +478,7 @@ fn drop_privileges(cfg: &Config) -> io::Result<()> {
     // Drop supplementary groups entirely to avoid retaining root-level groups.
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
+        // This function is not available on Apple platforms.
         let empty: &[nix::unistd::Gid] = &[];
         unistd::setgroups(empty)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("setgroups failed: {e}")))?;
