@@ -37,7 +37,7 @@ fn enforce_max_payload_ipv4(proto: &str) {
             .arg("--there")
             .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
-            .arg("1")
+            .arg("2")
             .arg("--on-timeout")
             .arg("exit")
             .arg("--stats-interval-mins")
@@ -53,7 +53,7 @@ fn enforce_max_payload_ipv4(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(2);
+    let max_wait = Duration::from_secs(3);
     let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
@@ -85,14 +85,26 @@ fn enforce_max_payload_ipv4(proto: &str) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
+                break;
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // If it didn't exit, kill for cleanliness
-    let _ = child.kill();
+    // Ensure that the process has exited successfully by now; this validates
+    // the --timeout-secs + --on-timeout=exit watchdog behavior.
+    let status_opt = child
+        .try_wait()
+        .expect("wait error while checking forwarder exit status");
+    match status_opt {
+        Some(status) => {
+            assert!(status.success(), "forwarder did not exit cleanly: {status}",);
+        }
+        None => {
+            panic!("forwarder did not exit within {:?}", max_wait);
+        }
+    }
 
     // Check that the stats show one drop
     let json_wait = Duration::from_millis(50);
@@ -138,7 +150,7 @@ fn enforce_max_payload_ipv6(proto: &str) {
             .arg("--there")
             .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
-            .arg("1")
+            .arg("2")
             .arg("--on-timeout")
             .arg("exit")
             .arg("--stats-interval-mins")
@@ -154,7 +166,7 @@ fn enforce_max_payload_ipv6(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(2);
+    let max_wait = Duration::from_secs(3);
     let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
@@ -186,14 +198,26 @@ fn enforce_max_payload_ipv6(proto: &str) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
+                break;
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // If it didn't exit, kill for cleanliness
-    let _ = child.kill();
+    // Ensure that the process has exited successfully by now; this validates
+    // the --timeout-secs + --on-timeout=exit watchdog behavior.
+    let status_opt = child
+        .try_wait()
+        .expect("wait error while checking forwarder exit status");
+    match status_opt {
+        Some(status) => {
+            assert!(status.success(), "forwarder did not exit cleanly: {status}",);
+        }
+        None => {
+            panic!("forwarder did not exit within {:?}", max_wait);
+        }
+    }
 
     // Check that the stats show one drop
     let json_wait = Duration::from_millis(50);
@@ -238,7 +262,7 @@ fn single_client_forwarding_ipv4(proto: &str) {
             .arg("--there")
             .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
-            .arg("1")
+            .arg("2")
             .arg("--on-timeout")
             .arg("exit")
             .arg("--stats-interval-mins")
@@ -252,7 +276,7 @@ fn single_client_forwarding_ipv4(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(2);
+    let max_wait = Duration::from_secs(3);
     let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
@@ -279,14 +303,26 @@ fn single_client_forwarding_ipv4(proto: &str) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
+                break;
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // If it didn't exit, kill for cleanliness
-    let _ = child.kill();
+    // Ensure that the process has exited successfully by now; this validates
+    // the --timeout-secs + --on-timeout=exit watchdog behavior.
+    let status_opt = child
+        .try_wait()
+        .expect("wait error while checking forwarder exit status");
+    match status_opt {
+        Some(status) => {
+            assert!(status.success(), "forwarder did not exit cleanly: {status}",);
+        }
+        None => {
+            panic!("forwarder did not exit within {:?}", max_wait);
+        }
+    }
 
     // Validate stats snapshot fields
     let json_wait = Duration::from_millis(50);
@@ -428,7 +464,7 @@ fn single_client_forwarding_ipv6(proto: &str) {
             .arg("--there")
             .arg(format!("{proto}:{up_addr}"))
             .arg("--timeout-secs")
-            .arg("1")
+            .arg("2")
             .arg("--on-timeout")
             .arg("exit")
             .arg("--stats-interval-mins")
@@ -442,7 +478,7 @@ fn single_client_forwarding_ipv6(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(2);
+    let max_wait = Duration::from_secs(3);
     let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
@@ -469,14 +505,26 @@ fn single_client_forwarding_ipv6(proto: &str) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
+                break;
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // If it didn't exit, kill for cleanliness
-    let _ = child.kill();
+    // Ensure that the process has exited successfully by now; this validates
+    // the --timeout-secs + --on-timeout=exit watchdog behavior.
+    let status_opt = child
+        .try_wait()
+        .expect("wait error while checking forwarder exit status");
+    match status_opt {
+        Some(status) => {
+            assert!(status.success(), "forwarder did not exit cleanly: {status}",);
+        }
+        None => {
+            panic!("forwarder did not exit within {:?}", max_wait);
+        }
+    }
 
     // Validate stats snapshot fields
     let json_wait = Duration::from_millis(50);
@@ -727,7 +775,7 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     let n = got.expect("did not receive echo from forwarder after re-lock");
     assert_eq!(&buf[..n], payload_b);
 
-    // Give forwarder a moment to print stats, then terminate cleanly
+    // Give forwarder a moment to print stats, then tear it down for test cleanup
     let json_wait = Duration::from_millis(50);
     let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
         "did not see stats JSON line within {:?}",

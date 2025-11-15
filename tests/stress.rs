@@ -62,7 +62,7 @@ fn stress_one_minute_ipv4(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(2);
+    let max_wait = Duration::from_secs(3);
     let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
         "did not see listening address line within {:?}",
         max_wait
@@ -114,14 +114,26 @@ fn stress_one_minute_ipv4(proto: &str) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
+                break;
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => panic!("wait error: {e}"),
         }
     }
 
-    // If it didn't exit, kill for cleanliness
-    let _ = child.kill();
+    // Ensure that the process has exited successfully by now; this validates
+    // the --timeout-secs + --on-timeout=exit watchdog behavior.
+    let status_opt = child
+        .try_wait()
+        .expect("wait error while checking forwarder exit status");
+    match status_opt {
+        Some(status) => {
+            assert!(status.success(), "forwarder did not exit cleanly: {status}",);
+        }
+        None => {
+            panic!("forwarder did not exit within {:?}", max_wait);
+        }
+    }
 
     // Sanity check via stats snapshot
     let json_wait = Duration::from_millis(50);
