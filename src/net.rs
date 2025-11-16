@@ -9,7 +9,8 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomOrdering};
 use std::time::{Duration, Instant};
 
-static ICMP_SEQ: AtomicU16 = AtomicU16::new(1);
+static REQUEST_ICMP_SEQ: AtomicU16 = AtomicU16::new(0);
+static REPLY_ICMP_SEQ: AtomicU16 = AtomicU16::new(0);
 static ZERO_ARRAY: [u8; 1] = [0];
 
 #[inline(always)]
@@ -89,16 +90,18 @@ pub fn send_payload(
     };
 
     // If the source side was ICMP, strip the 8-byte Echo header before forwarding.
-    let (icmp_success, payload, src_ident, src_is_req) =
-        if matches!(src_proto, SupportedProtocol::ICMP) {
-            parse_icmp_echo_header(buf)
-        } else {
-            (true, buf, recv.port(), c2u)
-        };
+    let (icmp_success, payload, src_ident, src_seq_opt, src_is_req) = match src_proto {
+        SupportedProtocol::ICMP => {
+            let res = parse_icmp_echo_header(buf);
+            (res.0, res.1, res.2, Some(res.3), res.4)
+        }
+        _ => (true, buf, recv.port(), None, c2u),
+    };
 
     // Size check on the normalized payload.
     let len = payload.len();
 
+    // Handle forwarding errors
     if !icmp_success {
         if debug {
             eprintln!("Dropping packet: Invalid or truncated ICMP Echo header");
@@ -129,6 +132,11 @@ pub fn send_payload(
             stats.drop_u2c_oversize();
         }
         return;
+    }
+
+    // Update ICMP reply sequence when we receive a request
+    if let Some(src_seq) = src_seq_opt {
+        REPLY_ICMP_SEQ.store(src_seq, AtomOrdering::Relaxed);
     }
 
     // Send according to destination protocol and connection state.
@@ -180,12 +188,13 @@ pub fn send_payload(
 ///   * validating ICMP(v6) Echo type/code (v4: 8/0; v6: 128/129 with code 0)
 ///   * stripping the 8-byte ICMP Echo header and returning the remaining payload
 ///
-/// The return tuple is `(ok, payload, ident, is_request)` where:
+/// The return tuple is `(ok, payload, ident, seq, is_request)` where:
 ///   * `ok` is `true` iff a complete ICMP(v6) Echo {request, reply} header with
 ///     code 0 was found and validated.
 ///   * `payload` is the slice after the Echo header when `ok == true`, or an
 ///     empty slice otherwise.
 ///   * `ident` is the Echo identifier field (undefined when `ok == false`).
+///   * `seq` is the Echo sequence field (undefined when `ok == false`).
 ///   * `is_request` is `true` for Echo Request and `false` for Echo Reply
 ///     (undefined when `ok == false`).
 ///
@@ -195,7 +204,7 @@ pub fn send_payload(
 /// checks. If you change it, re-benchmark under load before simplifying the
 /// control flow.
 #[inline]
-fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, bool) {
+fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, u16, bool) {
     let n = payload.len();
     // Probe bytes: read 0,6,9 only when available; otherwise treat as zeroes.
     let has0 = (n >= 1) as usize;
@@ -248,6 +257,12 @@ fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, bool) {
     let ident_b1 = buf[(off + 5) * success];
     let ident_b0 = buf[(off + 4) * success];
     let ident = be16_16(ident_b0, ident_b1);
+
+    // Sequence is bytes 6..8 of the ICMP Echo header (for both v4 and v6 Echo).
+    let seq_b1 = buf[(off + 7) * success];
+    let seq_b0 = buf[(off + 6) * success];
+    let seq = be16_16(seq_b0, seq_b1);
+
     let is_request = matches!(icmp_type, 8 | 128);
 
     // On failure, `success == 0` collapses the slice to 0..0 (empty) rather than indexing at `off`.
@@ -255,6 +270,7 @@ fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, bool) {
         success_bool,
         &buf[(off + 8) * success..n * success],
         ident,
+        seq,
         is_request,
     )
 }
@@ -269,7 +285,11 @@ fn send_icmp_echo(
     payload: &[u8],
     connected: bool,
 ) -> io::Result<usize> {
-    let seq = ICMP_SEQ.fetch_add(1, AtomOrdering::Relaxed);
+    let seq = if reply {
+        REPLY_ICMP_SEQ.load(AtomOrdering::Relaxed)
+    } else {
+        REQUEST_ICMP_SEQ.fetch_add(1, AtomOrdering::Relaxed)
+    };
     let mut hdr = [0u8; 8];
 
     let idb = ident.to_be_bytes();
