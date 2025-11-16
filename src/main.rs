@@ -412,6 +412,7 @@ fn main() -> io::Result<()> {
         cfg.listen_proto,
         Arc::clone(&client_peer),
         Arc::clone(&upstream_mgr),
+        t_start,
         u64::from(cfg.stats_interval_mins).saturating_mul(60),
         Arc::clone(&exit_code_set),
     );

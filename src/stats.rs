@@ -73,55 +73,57 @@ impl Stats {
     }
 
     #[inline]
-    pub fn add_c2u(&self, bytes: u64, start: Instant, end: Instant) {
+    pub fn send_add(&self, c2u: bool, bytes: u64, start: Instant, end: Instant) {
         let lat_ns = Self::dur_ns(start, end);
-        self.agg.c2u_pkts.fetch_add(1, AtomOrdering::Relaxed);
-        self.agg.c2u_bytes.fetch_add(bytes, AtomOrdering::Relaxed);
-        self.agg
-            .c2u_lat_sum_ns
-            .fetch_add(lat_ns, AtomOrdering::Relaxed);
-        Self::atomic_fetch_max(&self.agg.c2u_lat_max_ns, lat_ns);
-        Self::atomic_fetch_max(&self.agg.c2u_bytes_max, bytes);
+        let (atom_pkts, atom_bytes, atom_lat_sum_ns, atom_lat_max_ns, atom_bytes_max) = if c2u {
+            (
+                &self.agg.c2u_pkts,
+                &self.agg.c2u_bytes,
+                &self.agg.c2u_lat_sum_ns,
+                &self.agg.c2u_lat_max_ns,
+                &self.agg.c2u_bytes_max,
+            )
+        } else {
+            (
+                &self.agg.u2c_pkts,
+                &self.agg.u2c_bytes,
+                &self.agg.u2c_lat_sum_ns,
+                &self.agg.u2c_lat_max_ns,
+                &self.agg.u2c_bytes_max,
+            )
+        };
+
+        atom_pkts.fetch_add(1, AtomOrdering::Relaxed);
+        atom_bytes.fetch_add(bytes, AtomOrdering::Relaxed);
+        atom_lat_sum_ns.fetch_add(lat_ns, AtomOrdering::Relaxed);
+        Self::atomic_fetch_max(atom_lat_max_ns, lat_ns);
+        Self::atomic_fetch_max(atom_bytes_max, bytes);
     }
     #[inline]
-    pub fn c2u_err(&self) {
-        self.agg.c2u_errs.fetch_add(1, AtomOrdering::Relaxed);
+    pub fn drop_err(&self, c2u: bool) {
+        let atom_errs = if c2u {
+            &self.agg.c2u_errs
+        } else {
+            &self.agg.u2c_errs
+        };
+        atom_errs.fetch_add(1, AtomOrdering::Relaxed);
     }
     #[inline]
-    pub fn add_u2c(&self, bytes: u64, start: Instant, end: Instant) {
-        let lat_ns = Self::dur_ns(start, end);
-        self.agg.u2c_pkts.fetch_add(1, AtomOrdering::Relaxed);
-        self.agg.u2c_bytes.fetch_add(bytes, AtomOrdering::Relaxed);
-        self.agg
-            .u2c_lat_sum_ns
-            .fetch_add(lat_ns, AtomOrdering::Relaxed);
-        Self::atomic_fetch_max(&self.agg.u2c_lat_max_ns, lat_ns);
-        Self::atomic_fetch_max(&self.agg.u2c_bytes_max, bytes);
-    }
-    #[inline]
-    pub fn u2c_err(&self) {
-        self.agg.u2c_errs.fetch_add(1, AtomOrdering::Relaxed);
-    }
-    #[inline]
-    pub fn drop_c2u_oversize(&self) {
-        self.agg
-            .c2u_drops_oversize
-            .fetch_add(1, AtomOrdering::Relaxed);
-    }
-    #[inline]
-    pub fn drop_u2c_oversize(&self) {
-        self.agg
-            .u2c_drops_oversize
-            .fetch_add(1, AtomOrdering::Relaxed);
+    pub fn drop_oversize(&self, c2u: bool) {
+        let atom_drops_oversize = if c2u {
+            &self.agg.c2u_drops_oversize
+        } else {
+            &self.agg.u2c_drops_oversize
+        };
+        atom_drops_oversize.fetch_add(1, AtomOrdering::Relaxed);
     }
 
-    /// Returns the Instant when the stats thread started, if started.
-    #[allow(dead_code)]
+    /// Returns the Instant when the stats thread was spawned, if started.
     pub fn start_time(&self) -> Option<Instant> {
         self.start.get().cloned()
     }
 
-    /// Returns uptime in seconds since the stats thread started, if started.
+    /// Returns uptime in seconds since the stats thread was spawned, if started.
     pub fn uptime_seconds(&self) -> Option<u64> {
         self.start.get().map(|s| s.elapsed().as_secs())
     }
@@ -304,6 +306,7 @@ impl Stats {
         client_proto: SupportedProtocol,
         client_peer: Arc<Mutex<Option<SocketAddr>>>,
         upstream_mgr: Arc<UpstreamManager>,
+        start: Instant,
         every_secs: u64,
         exit_code_set: Arc<AtomicU32>,
     ) -> bool {
@@ -317,7 +320,7 @@ impl Stats {
         {
             return false; // already running
         }
-        let _ = stats.start.set(Instant::now());
+        let _ = stats.start.set(start);
         thread::spawn(move || {
             // Cadences:
             //  - MAINT_TICK: short cadence (EWMA refresh + shutdown check)
@@ -345,7 +348,7 @@ impl Stats {
             ) = stats.load_snapshot();
 
             let print_period = Duration::from_secs(every);
-            let mut next_print_at = Instant::now() + print_period;
+            let mut next_print_at = stats.start_time().unwrap_or_else(Instant::now) + print_period;
             loop {
                 // Take one snapshot per tick for both EWMA update and (maybe) printing
                 let (

@@ -106,11 +106,7 @@ pub fn send_payload(
         if debug {
             eprintln!("Dropping packet: Invalid or truncated ICMP Echo header");
         }
-        if c2u {
-            stats.c2u_err();
-        } else {
-            stats.u2c_err();
-        }
+        stats.drop_err(c2u);
         return;
     } else if c2u != src_is_req || src_ident != recv.port() {
         // If this is the client->upstream direction and we received an ICMP Echo *reply* or
@@ -126,11 +122,7 @@ pub fn send_payload(
                 len, cfg.max_payload
             );
         }
-        if c2u {
-            stats.drop_c2u_oversize();
-        } else {
-            stats.drop_u2c_oversize();
-        }
+        stats.drop_oversize(c2u);
         return;
     }
 
@@ -157,21 +149,13 @@ pub fn send_payload(
         Ok(_) => {
             let t_send = Instant::now();
             last_seen.store(Stats::dur_ns(t_start, t_send), AtomOrdering::Relaxed);
-            if c2u {
-                stats.add_c2u(len as u64, t_recv, t_send);
-            } else {
-                stats.add_u2c(len as u64, t_recv, t_send);
-            }
+            stats.send_add(c2u, len as u64, t_recv, t_send);
         }
         Err(e) => {
             if debug {
                 eprintln!("Send to '{}' error: {}", dest, e);
             }
-            if c2u {
-                stats.c2u_err();
-            } else {
-                stats.u2c_err();
-            }
+            stats.drop_err(c2u);
         }
     }
 }
