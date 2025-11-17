@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 static REQUEST_ICMP_SEQ: AtomicU16 = AtomicU16::new(0);
 static REPLY_ICMP_SEQ: AtomicU16 = AtomicU16::new(0);
-static ZERO_ARRAY: [u8; 1] = [0];
+const ZERO_ARRAY: [u8; 1] = [0];
 
 #[inline(always)]
 fn be16_16(b0: u8, b1: u8) -> u16 {
@@ -84,7 +84,7 @@ fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
                 "Warning: ICMP datagram sockets unavailable on {:?} ({err}); falling back to raw sockets",
                 domain
             );
-            Socket::new(domain, Type::from(3), Some(proto)) // SOCK_RAW = 3
+            Socket::new(domain, Type::RAW, Some(proto))
         }
     }
 }
@@ -93,7 +93,7 @@ fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
 fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
     // Other OSes do not expose ping sockets via SOCK_DGRAM; raw sockets are the
     // only option for sending ICMP Echo traffic.
-    Socket::new(domain, Type::from(3), Some(proto)) // SOCK_RAW = 3
+    Socket::new(domain, Type::RAW, Some(proto))
 }
 
 pub fn send_payload(
@@ -314,16 +314,29 @@ fn send_icmp_echo(
     hdr[6] = sqb[0];
     hdr[7] = sqb[1];
 
-    let cksum = match dest {
-        // ICMPv6 Echo: type=128(req)/129(rep), code=0, checksum handled by kernel on many OSes
-        SocketAddr::V6(_) => {
+    // Dest family picks ICMP type and whether we should compute the checksum
+    let socket_type = sock.r#type()?;
+    let cksum = match (dest, socket_type) {
+        // ICMPv6 Echo: type=128(req)/129(rep), code=0; checksum handled in-kernel
+        (SocketAddr::V6(_), _) => {
             hdr[0] = 128u8 | (reply as u8);
             0u16
         }
-        // ICMPv4 Echo: type=8(req)/0(rep), code=0, checksum over header+payload
+        // ICMPv4 Echo: type=8(req)/0(rep), code=0.
+        // RAW sockets require a manual checksum; datagram sockets get it from the Linux kernel.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        (_, ty) if ty == Type::RAW => {
+            hdr[0] = 8u8 * (!reply as u8);
+            checksum16(&hdr, payload)
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         _ => {
             hdr[0] = 8u8 * (!reply as u8);
-            // Compute checksum without copying payload
+            0u16
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        _ => {
+            hdr[0] = 8u8 * (!reply as u8);
             checksum16(&hdr, payload)
         }
     };
