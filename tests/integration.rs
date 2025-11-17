@@ -41,7 +41,7 @@ fn enforce_max_payload_ipv4(proto: &str) {
         .arg("--there")
         .arg(format!("{proto}:{up_addr}"))
         .arg("--timeout-secs")
-        .arg("2")
+        .arg(TIMEOUT_SECS.as_secs().to_string())
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -61,10 +61,9 @@ fn enforce_max_payload_ipv4(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(3);
-    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
+    let listen_addr = wait_for_listen_addr_from(&mut out, MAX_WAIT_SECS).expect(&format!(
         "did not see listening address line within {:?}",
-        max_wait
+        MAX_WAIT_SECS
     ));
     client_sock
         .connect(listen_addr)
@@ -81,15 +80,13 @@ fn enforce_max_payload_ipv4(proto: &str) {
     // One byte over should be dropped (no echo)
     let over = vec![0u8; 549];
     client_sock.send(&over).unwrap();
-    client_sock
-        .set_read_timeout(Some(Duration::from_millis(250)))
-        .unwrap();
+    client_sock.set_read_timeout(Some(CLIENT_WAIT_MS)).unwrap();
     let drop_expected = client_sock.recv(&mut buf).is_err();
     assert!(drop_expected, "oversize payload should be dropped");
 
-    // After ~2s of idle it should exit; give it a moment
+    // After TIMEOUT_SECS of idle it should exit; give it a moment
     let start = Instant::now();
-    while start.elapsed() < max_wait {
+    while start.elapsed() < MAX_WAIT_SECS {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
@@ -110,15 +107,14 @@ fn enforce_max_payload_ipv4(proto: &str) {
             assert!(status.success(), "forwarder did not exit cleanly: {status}",);
         }
         None => {
-            panic!("forwarder did not exit within {:?}", max_wait);
+            panic!("forwarder did not exit within {:?}", MAX_WAIT_SECS);
         }
     }
 
     // Check that the stats show one drop
-    let json_wait = Duration::from_millis(50);
-    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
+    let stats = wait_for_stats_json_from(&mut out, JSON_WAIT_MS).expect(&format!(
         "did not see stats JSON line within {:?}",
-        json_wait
+        JSON_WAIT_MS
     ));
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
@@ -160,7 +156,7 @@ fn enforce_max_payload_ipv6(proto: &str) {
         .arg("--there")
         .arg(format!("{proto}:{up_addr}"))
         .arg("--timeout-secs")
-        .arg("2")
+        .arg(TIMEOUT_SECS.as_secs().to_string())
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -180,10 +176,9 @@ fn enforce_max_payload_ipv6(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(3);
-    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
+    let listen_addr = wait_for_listen_addr_from(&mut out, MAX_WAIT_SECS).expect(&format!(
         "did not see listening address line within {:?}",
-        max_wait
+        MAX_WAIT_SECS
     ));
     client_sock
         .connect(listen_addr)
@@ -200,15 +195,13 @@ fn enforce_max_payload_ipv6(proto: &str) {
     // One byte over should be dropped (no echo)
     let over = vec![0u8; 1233];
     client_sock.send(&over).unwrap();
-    client_sock
-        .set_read_timeout(Some(Duration::from_millis(250)))
-        .unwrap();
+    client_sock.set_read_timeout(Some(CLIENT_WAIT_MS)).unwrap();
     let drop_expected = client_sock.recv(&mut buf).is_err();
     assert!(drop_expected, "oversize payload should be dropped");
 
-    // After ~2s of idle it should exit; give it a moment
+    // After TIMEOUT_SECS of idle it should exit; give it a moment
     let start = Instant::now();
-    while start.elapsed() < max_wait {
+    while start.elapsed() < MAX_WAIT_SECS {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
@@ -229,15 +222,14 @@ fn enforce_max_payload_ipv6(proto: &str) {
             assert!(status.success(), "forwarder did not exit cleanly: {status}",);
         }
         None => {
-            panic!("forwarder did not exit within {:?}", max_wait);
+            panic!("forwarder did not exit within {:?}", MAX_WAIT_SECS);
         }
     }
 
     // Check that the stats show one drop
-    let json_wait = Duration::from_millis(50);
-    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
+    let stats = wait_for_stats_json_from(&mut out, JSON_WAIT_MS).expect(&format!(
         "did not see stats JSON line within {:?}",
-        json_wait
+        JSON_WAIT_MS
     ));
     assert_eq!(stats["c2u_drops_oversize"].as_u64().unwrap_or(0), 1);
 }
@@ -277,7 +269,7 @@ fn single_client_forwarding_ipv4(proto: &str) {
         .arg("--there")
         .arg(format!("{proto}:{up_addr}"))
         .arg("--timeout-secs")
-        .arg("2")
+        .arg(TIMEOUT_SECS.as_secs().to_string())
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -295,10 +287,9 @@ fn single_client_forwarding_ipv4(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(3);
-    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
+    let listen_addr = wait_for_listen_addr_from(&mut out, MAX_WAIT_SECS).expect(&format!(
         "did not see listening address line within {:?}",
-        max_wait
+        MAX_WAIT_SECS
     ));
     client_sock
         .connect(listen_addr)
@@ -316,9 +307,9 @@ fn single_client_forwarding_ipv4(proto: &str) {
         assert_eq!(&buf[..n], payload, "echo payload mismatch");
     }
 
-    // After ~2s of idle it should exit; give it a moment
+    // After TIMEOUT_SECS of idle it should exit; give it a moment
     let start = Instant::now();
-    while start.elapsed() < max_wait {
+    while start.elapsed() < MAX_WAIT_SECS {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
@@ -339,15 +330,14 @@ fn single_client_forwarding_ipv4(proto: &str) {
             assert!(status.success(), "forwarder did not exit cleanly: {status}",);
         }
         None => {
-            panic!("forwarder did not exit within {:?}", max_wait);
+            panic!("forwarder did not exit within {:?}", MAX_WAIT_SECS);
         }
     }
 
     // Validate stats snapshot fields
-    let json_wait = Duration::from_millis(50);
-    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
+    let stats = wait_for_stats_json_from(&mut out, JSON_WAIT_MS).expect(&format!(
         "did not see stats JSON line within {:?}",
-        json_wait
+        JSON_WAIT_MS
     ));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
@@ -485,7 +475,7 @@ fn single_client_forwarding_ipv6(proto: &str) {
         .arg("--there")
         .arg(format!("{proto}:{up_addr}"))
         .arg("--timeout-secs")
-        .arg("2")
+        .arg(TIMEOUT_SECS.as_secs().to_string())
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -503,10 +493,9 @@ fn single_client_forwarding_ipv6(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(3);
-    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
+    let listen_addr = wait_for_listen_addr_from(&mut out, MAX_WAIT_SECS).expect(&format!(
         "did not see listening address line within {:?}",
-        max_wait
+        MAX_WAIT_SECS
     ));
     client_sock
         .connect(listen_addr)
@@ -524,9 +513,9 @@ fn single_client_forwarding_ipv6(proto: &str) {
         assert_eq!(&buf[..n], payload, "echo v6 payload mismatch");
     }
 
-    // After ~2s of idle it should exit; give it a moment
+    // After TIMEOUT_SECS of idle it should exit; give it a moment
     let start = Instant::now();
-    while start.elapsed() < max_wait {
+    while start.elapsed() < MAX_WAIT_SECS {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
@@ -547,15 +536,14 @@ fn single_client_forwarding_ipv6(proto: &str) {
             assert!(status.success(), "forwarder did not exit cleanly: {status}",);
         }
         None => {
-            panic!("forwarder did not exit within {:?}", max_wait);
+            panic!("forwarder did not exit within {:?}", MAX_WAIT_SECS);
         }
     }
 
     // Validate stats snapshot fields
-    let json_wait = Duration::from_millis(50);
-    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
+    let stats = wait_for_stats_json_from(&mut out, JSON_WAIT_MS).expect(&format!(
         "did not see stats JSON line within {:?}",
-        json_wait
+        JSON_WAIT_MS
     ));
     assert!(stats["uptime_s"].is_number());
     assert!(stats["locked"].as_bool().unwrap_or(false));
@@ -684,7 +672,7 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
         .arg("--there")
         .arg(format!("{proto}:{up_addr}"))
         .arg("--timeout-secs")
-        .arg("2")
+        .arg(TIMEOUT_SECS.as_secs().to_string())
         .arg("--on-timeout")
         .arg("drop")
         .arg("--stats-interval-mins")
@@ -702,10 +690,9 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     // Read the forwarder's listen address and connect client A
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(2);
-    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
+    let listen_addr = wait_for_listen_addr_from(&mut out, MAX_WAIT_SECS).expect(&format!(
         "did not see listening address line within {:?}",
-        max_wait
+        MAX_WAIT_SECS
     ));
 
     client_a
@@ -717,11 +704,11 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     client_a.send(payload_a).expect("send A");
 
     // Confirm the forwarder locked to client A
-    let a_locked_opt = wait_for_locked_client_from(&mut out, max_wait);
+    let a_locked_opt = wait_for_locked_client_from(&mut out, MAX_WAIT_SECS);
     assert!(
         a_locked_opt.is_some(),
         "did not see lock line for client A within {:?}",
-        max_wait
+        MAX_WAIT_SECS
     );
     let a_locked = a_locked_opt.unwrap();
     let client_a_local = client_a.local_addr().expect("client A local addr");
@@ -735,7 +722,7 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     assert_eq!(&buf[..n], payload_a);
 
     // Now go idle > timeout so watchdog drops the lock and disconnects
-    thread::sleep(max_wait + Duration::from_millis(250));
+    thread::sleep(TIMEOUT_SECS + CLIENT_WAIT_MS);
 
     // Ensure process did NOT exit under on-timeout=drop
     if let Ok(Some(status)) = child.try_wait() {
@@ -748,28 +735,27 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
         .expect("connect B -> forwarder");
     let payload_b = b"second-client";
     client_b
-        .set_read_timeout(Some(Duration::from_millis(250)))
+        .set_read_timeout(Some(CLIENT_WAIT_MS))
         .expect("set read timeout on client B");
 
     // Trigger relock by sending a few datagrams, then wait explicitly for the lock line.
-    let client_wait = Duration::from_millis(250);
+    let mut b_locked_opt = None;
 
     // Stage 1: send until we see the forwarder announce the new locked client.
-    let mut b_locked_opt = None;
     for _ in 0..40 {
         let _ = client_b.send(payload_b);
-        if let Some(locked) = wait_for_locked_client_from(&mut out, client_wait) {
+        if let Some(locked) = wait_for_locked_client_from(&mut out, CLIENT_WAIT_MS) {
             b_locked_opt = Some(locked);
             break;
         }
         // Socket/forwarder might be busy; brief backoff and retry.
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(50));
     }
 
     assert!(
         b_locked_opt.is_some(),
         "did not see lock line for client B within {:?}",
-        client_wait
+        CLIENT_WAIT_MS
     );
     let b_locked = b_locked_opt.unwrap();
     let client_b_local = client_b.local_addr().expect("client B local addr");
@@ -781,7 +767,7 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     // Stage 2: now that the forwarder is relocked, receive the echo.
     // Allow brief transient conditions by retrying and re-sending.
     client_b
-        .set_read_timeout(Some(Duration::from_millis(250)))
+        .set_read_timeout(Some(CLIENT_WAIT_MS))
         .expect("set read timeout on client B");
 
     let mut got: Option<usize> = None;
@@ -798,7 +784,7 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
             {
                 // Nudge pipeline and try again
                 let _ = client_b.send(payload_b);
-                thread::sleep(Duration::from_millis(30));
+                thread::sleep(Duration::from_millis(50));
                 continue;
             }
             Err(e) => panic!("recv echo B: {e}"),
@@ -808,10 +794,9 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     assert_eq!(&buf[..n], payload_b);
 
     // Give forwarder a moment to print stats, then tear it down for test cleanup
-    let json_wait = Duration::from_millis(50);
-    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
+    let stats = wait_for_stats_json_from(&mut out, JSON_WAIT_MS).expect(&format!(
         "did not see stats JSON line within {:?}",
-        json_wait
+        JSON_WAIT_MS
     ));
     let _ = child.kill();
 

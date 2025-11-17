@@ -1,9 +1,9 @@
 mod common;
 
 use crate::common::{
-    ChildGuard, bind_udp_v4_client, find_app_bin, random_unprivileged_port_v4,
-    spawn_udp_echo_server_v4, take_child_stdout, wait_for_listen_addr_from,
-    wait_for_stats_json_from,
+    ChildGuard, JSON_WAIT_MS, MAX_WAIT_SECS, TIMEOUT_SECS, bind_udp_v4_client, find_app_bin,
+    random_unprivileged_port_v4, spawn_udp_echo_server_v4, take_child_stdout,
+    wait_for_listen_addr_from, wait_for_stats_json_from,
 };
 #[cfg(unix)]
 use nix::unistd;
@@ -50,7 +50,7 @@ fn stress_one_minute_ipv4(proto: &str) {
         .arg("--there")
         .arg(format!("{proto}:{up_addr}"))
         .arg("--timeout-secs")
-        .arg("2")
+        .arg(TIMEOUT_SECS.as_secs().to_string())
         .arg("--on-timeout")
         .arg("exit")
         .arg("--stats-interval-mins")
@@ -68,10 +68,9 @@ fn stress_one_minute_ipv4(proto: &str) {
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
 
-    let max_wait = Duration::from_secs(3);
-    let listen_addr = wait_for_listen_addr_from(&mut out, max_wait).expect(&format!(
+    let listen_addr = wait_for_listen_addr_from(&mut out, MAX_WAIT_SECS).expect(&format!(
         "did not see listening address line within {:?}",
-        max_wait
+        MAX_WAIT_SECS
     ));
     client_sock
         .connect(listen_addr)
@@ -114,9 +113,9 @@ fn stress_one_minute_ipv4(proto: &str) {
 
     let rcvd = recv_thr.join().unwrap();
 
-    // After ~2s of idle it should exit; give it a moment
+    // After TIMEOUT_SECS of idle it should exit; give it a moment
     let start = Instant::now();
-    while start.elapsed() < max_wait {
+    while start.elapsed() < MAX_WAIT_SECS {
         match child.try_wait() {
             Ok(Some(status)) => {
                 assert!(status.success(), "forwarder did not exit cleanly: {status}");
@@ -137,15 +136,14 @@ fn stress_one_minute_ipv4(proto: &str) {
             assert!(status.success(), "forwarder did not exit cleanly: {status}",);
         }
         None => {
-            panic!("forwarder did not exit within {:?}", max_wait);
+            panic!("forwarder did not exit within {:?}", MAX_WAIT_SECS);
         }
     }
 
     // Sanity check via stats snapshot
-    let json_wait = Duration::from_millis(50);
-    let stats = wait_for_stats_json_from(&mut out, json_wait).expect(&format!(
+    let stats = wait_for_stats_json_from(&mut out, JSON_WAIT_MS).expect(&format!(
         "did not see stats JSON line within {:?}",
-        json_wait
+        JSON_WAIT_MS
     ));
     let c2u_pkts = stats["c2u_pkts"].as_u64().unwrap();
     let u2c_pkts = stats["u2c_pkts"].as_u64().unwrap();

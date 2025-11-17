@@ -10,6 +10,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{env, process::Child, thread};
 
+#[allow(dead_code)]
+pub const TIMEOUT_SECS: Duration = Duration::from_secs(2);
+#[allow(dead_code)]
+pub const MAX_WAIT_SECS: Duration = Duration::from_secs(4);
+#[allow(dead_code)]
+pub const CLIENT_WAIT_MS: Duration = Duration::from_millis(250);
+#[allow(dead_code)]
+pub const JSON_WAIT_MS: Duration = Duration::from_millis(50);
+
 /// Ensures the spawned child is terminated on drop (e.g., when a test panics).
 #[allow(dead_code)]
 pub struct ChildGuard(Child);
