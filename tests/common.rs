@@ -58,6 +58,12 @@ pub fn bind_udp_v4_client() -> io::Result<UdpSocket> {
 }
 
 #[allow(dead_code)]
+pub fn random_unprivileged_port_v4() -> io::Result<u16> {
+    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    Ok(sock.local_addr()?.port())
+}
+
+#[allow(dead_code)]
 pub fn bind_udp_v6_client() -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
     sock.set_read_timeout(Some(Duration::from_millis(5000)))?;

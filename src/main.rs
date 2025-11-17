@@ -290,10 +290,19 @@ fn print_startup(local_bind: &socket2::SockAddr, upstream_mgr: &UpstreamManager,
 
 fn main() -> io::Result<()> {
     let t_start = Instant::now();
-    let cfg = Arc::new(parse_args());
+    let mut user_requested_cfg = parse_args();
 
     // Listener for the local client (this may require root for low ports)
-    let client_sock = Arc::new(make_socket(cfg.listen_addr, cfg.listen_proto, 5000, false)?);
+    let (client_sock_raw, actual_listen) = make_socket(
+        user_requested_cfg.listen_addr,
+        user_requested_cfg.listen_proto,
+        5000,
+        false,
+    )?;
+    user_requested_cfg.listen_addr = actual_listen;
+    let client_sock = Arc::new(client_sock_raw);
+
+    let cfg = Arc::new(user_requested_cfg);
 
     // Initial upstream resolution + manager
     let upstream_mgr = Arc::new(UpstreamManager::new(

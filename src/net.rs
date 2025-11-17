@@ -24,26 +24,29 @@ fn be16_32(b0: u8, b1: u8) -> u32 {
 }
 
 /// Create a socket (UDP datagram or raw ICMP) bound to `bind_addr`.
+/// Returns the socket and the actual local SocketAddr after bind (for ICMP
+/// datagram sockets the kernel may assign an identifier/port).
 pub fn make_socket(
     bind_addr: SocketAddr,
     proto: SupportedProtocol,
     read_timeout_ms: u64,
     reuseaddr: bool,
-) -> io::Result<Socket> {
-    // Raw ICMP: use well-known protocol numbers cross-platform
-    // IPv4: 1, IPv6: 58
-    let (domain, pnum) = match bind_addr {
-        SocketAddr::V6(_) => (Domain::IPV6, 58),
-        _ => (Domain::IPV4, 1),
+) -> io::Result<(Socket, SocketAddr)> {
+    // Raw ICMP: use well-known protocol numbers (see IANA)
+    // IPv4 ICMP = 1, IPv6 ICMP = 58; same on Unix and Windows.
+    let (domain, icmp_proto) = match bind_addr {
+        SocketAddr::V6(_) => (Domain::IPV6, Protocol::from(58)), // IPPROTO_ICMPV6 = 58
+        _ => (Domain::IPV4, Protocol::from(1)),                  // IPPROTO_ICMP = 1
     };
 
-    // Select socket type and protocol per requested transport
-    let (sock_type, sock_proto) = match proto {
-        SupportedProtocol::ICMP => (Type::from(3), Some(Protocol::from(pnum))), // SOCK_RAW = 3
-        _ => (Type::DGRAM, Some(Protocol::UDP)),
+    let sock = match proto {
+        SupportedProtocol::ICMP => {
+            // Linux kernels expose SOCK_DGRAM ping sockets when ping_group_range
+            // permits it; fall back to raw sockets elsewhere.
+            make_icmp_socket(domain, icmp_proto)?
+        }
+        _ => Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?,
     };
-
-    let sock = Socket::new(domain, sock_type, sock_proto)?;
 
     if reuseaddr {
         sock.set_reuse_address(true)?;
@@ -64,7 +67,33 @@ pub fn make_socket(
         Some(Duration::from_millis(read_timeout_ms))
     })?;
 
-    Ok(sock)
+    let actual_local = sock.local_addr()?.as_socket().unwrap_or(bind_addr);
+
+    Ok((sock, actual_local))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
+    // Linux/Android expose ping sockets as SOCK_DGRAM that enforce ICMP checksum,
+    // avoid raw socket privileges, and honor ping_group_range. Prefer that path,
+    // but gracefully fall back to SOCK_RAW if the kernel denies access.
+    match Socket::new(domain, Type::DGRAM, Some(proto)) {
+        Ok(sock) => Ok(sock),
+        Err(err) => {
+            eprintln!(
+                "Warning: ICMP datagram sockets unavailable on {:?} ({err}); falling back to raw sockets",
+                domain
+            );
+            Socket::new(domain, Type::from(3), Some(proto)) // SOCK_RAW = 3
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
+    // Other OSes do not expose ping sockets via SOCK_DGRAM; raw sockets are the
+    // only option for sending ICMP Echo traffic.
+    Socket::new(domain, Type::from(3), Some(proto)) // SOCK_RAW = 3
 }
 
 pub fn send_payload(
@@ -312,12 +341,17 @@ fn send_icmp_echo(
 
 /// Create and connect a socket suitable for forwarding data to `dest`.
 pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> io::Result<Socket> {
+    let local_port = if matches!(proto, SupportedProtocol::ICMP) {
+        dest.port()
+    } else {
+        0
+    };
     let bind_addr = match dest {
-        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-        _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), local_port),
+        _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), local_port),
     };
 
-    let sock = make_socket(bind_addr, proto, 5000, false)?;
+    let (sock, _) = make_socket(bind_addr, proto, 5000, false)?;
 
     let dest_sa = SockAddr::from(dest);
     sock.connect(&dest_sa)?;

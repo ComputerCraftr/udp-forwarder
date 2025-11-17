@@ -1,9 +1,12 @@
 mod common;
 
 use crate::common::{
-    ChildGuard, bind_udp_v4_client, find_app_bin, spawn_udp_echo_server_v4, take_child_stdout,
-    wait_for_listen_addr_from, wait_for_stats_json_from,
+    ChildGuard, bind_udp_v4_client, find_app_bin, random_unprivileged_port_v4,
+    spawn_udp_echo_server_v4, take_child_stdout, wait_for_listen_addr_from,
+    wait_for_stats_json_from,
 };
+#[cfg(unix)]
+use nix::unistd;
 
 use std::net::SocketAddr;
 use std::process::{Command, Stdio};
@@ -11,13 +14,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore] // opt-in: `cargo test --test stress -- --ignored`
+#[ignore] // opt-in: `cargo test --test stress stress_one_minute_ipv4_udp -- --ignored`
 fn stress_one_minute_ipv4_udp() {
     stress_one_minute_ipv4("UDP");
 }
 
 #[test]
-#[ignore] // requires root for raw sockets, pings localhost
+#[ignore] // opt-in: `cargo test --test stress stress_one_minute_ipv4_icmp -- --ignored`
 fn stress_one_minute_ipv4_icmp() {
     stress_one_minute_ipv4("ICMP");
 }
@@ -32,7 +35,8 @@ fn stress_one_minute_ipv4(proto: &str) {
             .expect("IPv4 echo server could not bind")
             .0
     } else {
-        "127.0.0.1:5"
+        let ident = random_unprivileged_port_v4().expect("random ICMP identifier");
+        format!("127.0.0.1:{ident}")
             .parse::<SocketAddr>()
             .expect("IPv4 socket address could not be parsed")
     };
@@ -54,7 +58,8 @@ fn stress_one_minute_ipv4(proto: &str) {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    if proto.eq_ignore_ascii_case("icmp") {
+    #[cfg(unix)]
+    if unistd::geteuid().is_root() {
         cmd.arg("--user").arg("nobody");
     }
 

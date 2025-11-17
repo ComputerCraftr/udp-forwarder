@@ -1,6 +1,8 @@
 mod common;
 
 use crate::common::*;
+#[cfg(unix)]
+use nix::unistd;
 
 use std::io::ErrorKind;
 use std::process::{Command, Stdio};
@@ -13,7 +15,7 @@ fn enforce_max_payload_ipv4_udp() {
 }
 
 #[test]
-#[ignore] // requires root for raw sockets, pings localhost
+#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
 fn enforce_max_payload_ipv4_icmp() {
     enforce_max_payload_ipv4("ICMP");
 }
@@ -46,7 +48,8 @@ fn enforce_max_payload_ipv4(proto: &str) {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    if proto.eq_ignore_ascii_case("icmp") {
+    #[cfg(unix)]
+    if unistd::geteuid().is_root() {
         cmd.arg("--user").arg("nobody");
     }
 
@@ -123,7 +126,7 @@ fn enforce_max_payload_ipv6_udp() {
 }
 
 #[test]
-#[ignore] // requires root for raw sockets, pings localhost
+#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
 fn enforce_max_payload_ipv6_icmp() {
     enforce_max_payload_ipv6("ICMP");
 }
@@ -161,7 +164,8 @@ fn enforce_max_payload_ipv6(proto: &str) {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    if proto.eq_ignore_ascii_case("icmp") {
+    #[cfg(unix)]
+    if unistd::geteuid().is_root() {
         cmd.arg("--user").arg("nobody");
     }
 
@@ -238,7 +242,7 @@ fn single_client_forwarding_ipv4_udp() {
 }
 
 #[test]
-#[ignore] // requires root for raw sockets, pings localhost
+#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
 fn single_client_forwarding_ipv4_icmp() {
     single_client_forwarding_ipv4("ICMP");
 }
@@ -272,7 +276,8 @@ fn single_client_forwarding_ipv4(proto: &str) {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    if proto.eq_ignore_ascii_case("icmp") {
+    #[cfg(unix)]
+    if unistd::geteuid().is_root() {
         cmd.arg("--user").arg("nobody");
     }
 
@@ -436,7 +441,7 @@ fn single_client_forwarding_ipv6_udp() {
 }
 
 #[test]
-#[ignore] // requires root for raw sockets, pings localhost
+#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
 fn single_client_forwarding_ipv6_icmp() {
     single_client_forwarding_ipv6("ICMP");
 }
@@ -476,7 +481,8 @@ fn single_client_forwarding_ipv6(proto: &str) {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    if proto.eq_ignore_ascii_case("icmp") {
+    #[cfg(unix)]
+    if unistd::geteuid().is_root() {
         cmd.arg("--user").arg("nobody");
     }
 
@@ -638,7 +644,7 @@ fn relock_after_timeout_drop_ipv4_udp() {
 }
 
 #[test]
-#[ignore] // requires root for raw sockets, pings localhost
+#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
 fn relock_after_timeout_drop_ipv4_icmp() {
     relock_after_timeout_drop_ipv4("ICMP");
 }
@@ -656,9 +662,10 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     // Spawn the app binary
     let bin = find_app_bin().expect("could not find app binary");
 
+    let here_port = random_unprivileged_port_v4().expect("ephemeral listen port");
     let mut cmd = Command::new(bin);
     cmd.arg("--here")
-        .arg("UDP:127.0.0.1:22798")
+        .arg(format!("UDP:127.0.0.1:{here_port}"))
         .arg("--there")
         .arg(format!("{proto}:{up_addr}"))
         .arg("--timeout-secs")
@@ -670,7 +677,8 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    if proto.eq_ignore_ascii_case("icmp") {
+    #[cfg(unix)]
+    if unistd::geteuid().is_root() {
         cmd.arg("--user").arg("nobody");
     }
 
