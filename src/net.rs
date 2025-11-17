@@ -72,11 +72,11 @@ pub fn make_socket(
     Ok((sock, actual_local))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
-    // Linux/Android expose ping sockets as SOCK_DGRAM that enforce ICMP checksum,
-    // avoid raw socket privileges, and honor ping_group_range. Prefer that path,
-    // but gracefully fall back to SOCK_RAW if the kernel denies access.
+    // Linux/Android/macOS expose ping sockets as SOCK_DGRAM that enforce ICMP checksum
+    // and avoid raw socket privileges. Prefer that path, but gracefully fall back to
+    // SOCK_RAW if the kernel denies access or the feature is disabled.
     match Socket::new(domain, Type::DGRAM, Some(proto)) {
         Ok(sock) => Ok(sock),
         Err(err) => {
@@ -89,7 +89,7 @@ fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 fn make_icmp_socket(domain: Domain, proto: Protocol) -> io::Result<Socket> {
     // Other OSes do not expose ping sockets via SOCK_DGRAM; raw sockets are the
     // only option for sending ICMP Echo traffic.

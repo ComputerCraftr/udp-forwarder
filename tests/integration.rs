@@ -15,7 +15,10 @@ fn enforce_max_payload_ipv4_udp() {
 }
 
 #[test]
-#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "android", target_os = "macos")),
+    ignore
+)] // requires raw socket privileges on other OSes
 fn enforce_max_payload_ipv4_icmp() {
     enforce_max_payload_ipv4("ICMP");
 }
@@ -126,7 +129,10 @@ fn enforce_max_payload_ipv6_udp() {
 }
 
 #[test]
-#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "android", target_os = "macos")),
+    ignore
+)] // requires raw socket privileges on other OSes
 fn enforce_max_payload_ipv6_icmp() {
     enforce_max_payload_ipv6("ICMP");
 }
@@ -242,7 +248,10 @@ fn single_client_forwarding_ipv4_udp() {
 }
 
 #[test]
-#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "android", target_os = "macos")),
+    ignore
+)] // requires raw socket privileges on other OSes
 fn single_client_forwarding_ipv4_icmp() {
     single_client_forwarding_ipv4("ICMP");
 }
@@ -441,7 +450,10 @@ fn single_client_forwarding_ipv6_udp() {
 }
 
 #[test]
-#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "android", target_os = "macos")),
+    ignore
+)] // requires raw socket privileges on other OSes
 fn single_client_forwarding_ipv6_icmp() {
     single_client_forwarding_ipv6("ICMP");
 }
@@ -644,7 +656,10 @@ fn relock_after_timeout_drop_ipv4_udp() {
 }
 
 #[test]
-#[cfg_attr(not(any(target_os = "linux", target_os = "android")), ignore)] // requires raw socket privileges on other OSes
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "android", target_os = "macos")),
+    ignore
+)] // requires raw socket privileges on other OSes
 fn relock_after_timeout_drop_ipv4_icmp() {
     relock_after_timeout_drop_ipv4("ICMP");
 }
