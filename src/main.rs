@@ -3,7 +3,7 @@ mod net;
 mod stats;
 mod upstream;
 
-use cli::{Config, TimeoutAction, parse_args};
+use cli::{Config, SupportedProtocol, TimeoutAction, parse_args};
 use net::{make_socket, send_payload, udp_disconnect};
 #[cfg(unix)]
 use nix::unistd::{self, Group, User};
@@ -271,15 +271,11 @@ fn run_watchdog_thread(
     }
 }
 
-fn print_startup(local_bind: &socket2::SockAddr, upstream_mgr: &UpstreamManager, cfg: &Config) {
-    let local_str = match local_bind.as_socket() {
-        Some(sa) => sa.to_string(),
-        None => format!("{:?}", local_bind),
-    };
+fn print_startup(local_bind: SocketAddr, upstream_mgr: &UpstreamManager, cfg: &Config) {
     let (upstream_addr, upstream_proto) = { upstream_mgr.current_dest() };
     println!(
         "Listening on {}:{}, forwarding to upstream {}:{}. Waiting for first client...",
-        cfg.listen_proto, local_str, upstream_proto, upstream_addr
+        cfg.listen_proto, local_bind, upstream_proto, upstream_addr
     );
     println!(
         "Timeout: {}s, on-timeout: {:?}",
@@ -298,6 +294,7 @@ fn main() -> io::Result<()> {
         user_requested_cfg.listen_proto,
         5000,
         false,
+        user_requested_cfg.listen_proto == SupportedProtocol::ICMP,
     )?;
     user_requested_cfg.listen_addr = actual_listen;
     let client_sock = Arc::new(client_sock_raw);
@@ -340,8 +337,7 @@ fn main() -> io::Result<()> {
         })?;
     }
 
-    let local_bind = client_sock.local_addr()?;
-    print_startup(&local_bind, &upstream_mgr, &cfg);
+    print_startup(cfg.listen_addr, &upstream_mgr, &cfg);
 
     // Client -> Upstream
     {
