@@ -40,24 +40,25 @@ fn stress_one_minute_ipv4(proto: &str) {
     // Spawn the app binary
     let bin = find_app_bin().expect("could not find app binary");
 
-    // Run with small timeout & auto-exit on idle
-    let mut child = ChildGuard::new(
-        Command::new(bin)
-            .arg("--here")
-            .arg("UDP:127.0.0.1:0")
-            .arg("--there")
-            .arg(format!("{proto}:{up_addr}"))
-            .arg("--timeout-secs")
-            .arg("2")
-            .arg("--on-timeout")
-            .arg("exit")
-            .arg("--stats-interval-mins")
-            .arg("1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn forwarder"),
-    );
+    let mut cmd = Command::new(bin);
+    cmd.arg("--here")
+        .arg("UDP:127.0.0.1:0")
+        .arg("--there")
+        .arg(format!("{proto}:{up_addr}"))
+        .arg("--timeout-secs")
+        .arg("2")
+        .arg("--on-timeout")
+        .arg("exit")
+        .arg("--stats-interval-mins")
+        .arg("1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+
+    if proto.eq_ignore_ascii_case("icmp") {
+        cmd.arg("--user").arg("nobody");
+    }
+
+    let mut child = ChildGuard::new(cmd.spawn().expect("spawn app binary"));
 
     // Read the forwarder's listen address and connect the client
     let mut out = take_child_stdout(&mut child).expect("child stdout missing");
