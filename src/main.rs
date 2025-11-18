@@ -7,7 +7,7 @@ use cli::{Config, SupportedProtocol, TimeoutAction, parse_args};
 use net::{make_socket, send_payload, udp_disconnect};
 #[cfg(unix)]
 use nix::unistd::{self, Group, User};
-use socket2::{SockAddr, Socket};
+use socket2::{SockAddr, Socket, Type};
 use stats::Stats;
 use upstream::UpstreamManager;
 
@@ -44,6 +44,8 @@ fn run_client_to_upstream_thread(
     let (mut up_sock, mut dest, mut ver) = upstream_mgr.refresh_handles();
     let mut dest_sa = SockAddr::from(dest);
     let mut dest_port_id = dest.port();
+    // Only DGRAM sockets can skip checksums, fall back to RAW
+    let mut up_sock_type = up_sock.r#type().unwrap_or(Type::RAW);
     // Once locked, connect client socket to the peer and switch to recv()
     let mut local_unconnected_client: Option<SocketAddr> = Some(cfg.listen_addr);
     loop {
@@ -52,6 +54,7 @@ fn run_client_to_upstream_thread(
             (up_sock, dest, ver) = upstream_mgr.refresh_handles();
             dest_sa = SockAddr::from(dest);
             dest_port_id = dest.port();
+            up_sock_type = up_sock.r#type().unwrap_or(Type::RAW);
         }
         if local_unconnected_client.is_none() {
             // Connected fast path: only packets from the locked client are delivered
@@ -71,6 +74,7 @@ fn run_client_to_upstream_thread(
                             &up_sock,
                             &buf[..len],
                             true, // Upstream socket is always connected
+                            up_sock_type,
                             dest,
                             &dest_sa,
                             dest_port_id,
@@ -119,6 +123,7 @@ fn run_client_to_upstream_thread(
                             ver = new_ver;
                             dest_sa = SockAddr::from(dest);
                             dest_port_id = dest.port();
+                            up_sock_type = up_sock.r#type().unwrap_or(Type::RAW);
                         }
                     }
 
@@ -134,6 +139,7 @@ fn run_client_to_upstream_thread(
                             &up_sock,
                             &buf[..len],
                             true, // Upstream socket is always connected
+                            up_sock_type,
                             dest,
                             &dest_sa,
                             dest_port_id,
@@ -168,6 +174,8 @@ fn run_upstream_to_client_thread(
     // Cache upstream socket and destination; refresh only when version changes
     let (mut up_sock, mut up_sock_addr, mut ver) = upstream_mgr.refresh_handles();
     let mut up_sock_port_id = up_sock_addr.port();
+    // Only DGRAM sockets can skip checksums, fall back to RAW
+    let client_sock_type = client_sock.r#type().unwrap_or(Type::RAW);
     // Local cache of the locked client destination for fast send
     let mut local_dest: Option<(SocketAddr, SockAddr, u16, bool)> = None;
     loop {
@@ -195,6 +203,7 @@ fn run_upstream_to_client_thread(
                         client_sock,
                         &buf[..len],
                         *dest_connected,
+                        client_sock_type,
                         *dest,
                         &dest_sa,
                         *dest_port_id,
@@ -216,6 +225,7 @@ fn run_upstream_to_client_thread(
                         client_sock,
                         &buf[..len],
                         dest_connected,
+                        client_sock_type,
                         dest,
                         &dest_sa,
                         dest_port_id,

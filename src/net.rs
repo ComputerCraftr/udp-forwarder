@@ -119,6 +119,7 @@ pub fn send_payload(
     sock: &Socket,
     buf: &[u8],
     sock_connected: bool,
+    sock_type: Type,
     dest: SocketAddr,
     dest_sa: &SockAddr,
     dest_port_id: u16,
@@ -178,12 +179,13 @@ pub fn send_payload(
     let send_res = match dst_proto {
         SupportedProtocol::ICMP => send_icmp_echo(
             sock,
+            sock_connected,
+            sock_type,
             dest,
             dest_sa,
             dest_port_id,
             !c2u,
             payload,
-            sock_connected,
         ),
         _ => {
             if sock_connected {
@@ -311,12 +313,13 @@ fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, u16, bool) {
 /// Send an ICMP Echo Request or Reply (IPv4 or IPv6).
 fn send_icmp_echo(
     sock: &Socket,
+    sock_connected: bool,
+    sock_type: Type,
     dest: SocketAddr,
     dest_sa: &SockAddr,
     ident: u16,
     reply: bool,
     payload: &[u8],
-    connected: bool,
 ) -> io::Result<usize> {
     let seq = if reply {
         REPLY_ICMP_SEQ.load(AtomOrdering::Relaxed)
@@ -335,8 +338,7 @@ fn send_icmp_echo(
     hdr[7] = sqb[1];
 
     // Dest family picks ICMP type and whether we should compute the checksum
-    let socket_type = sock.r#type()?;
-    let cksum = match (dest, socket_type) {
+    let cksum = match (dest, sock_type) {
         // ICMPv6 Echo: type=128(req)/129(rep), code=0; checksum handled in-kernel
         (SocketAddr::V6(_), _) => {
             hdr[0] = 128u8 | (reply as u8);
@@ -365,7 +367,7 @@ fn send_icmp_echo(
     hdr[3] = (cksum & 0xFF) as u8;
 
     let iov = [IoSlice::new(&hdr), IoSlice::new(payload)];
-    if connected {
+    if sock_connected {
         sock.send_vectored(&iov)
     } else {
         sock.send_to_vectored(&iov, &dest_sa)
