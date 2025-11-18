@@ -124,7 +124,7 @@ pub fn send_payload(
     dest_sa: &SockAddr,
     dest_port_id: u16,
     recv_port_id: u16,
-    debug: bool,
+    log_drops: bool,
 ) {
     // Determine source/destination protocol for this direction once.
     let (src_proto, dst_proto) = if c2u {
@@ -147,7 +147,7 @@ pub fn send_payload(
 
     // Handle forwarding errors
     if !icmp_success {
-        if debug {
+        if log_drops {
             eprintln!("Dropping packet: Invalid or truncated ICMP Echo header");
         }
         stats.drop_err(c2u);
@@ -160,7 +160,7 @@ pub fn send_payload(
         // Not an error; just ignore replies from the client side.
         return;
     } else if cfg.max_payload != 0 && len > cfg.max_payload {
-        if debug {
+        if log_drops {
             eprintln!(
                 "Dropping packet: {} bytes exceeds max {}",
                 len, cfg.max_payload
@@ -203,7 +203,7 @@ pub fn send_payload(
             stats.send_add(c2u, len as u64, t_recv, t_send);
         }
         Err(e) => {
-            if debug {
+            if log_drops {
                 eprintln!("Send to '{}' error: {}", dest, e);
             }
             stats.drop_err(c2u);

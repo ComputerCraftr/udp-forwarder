@@ -7,8 +7,9 @@ use std::net::{
 };
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use std::{env, process::Child, thread};
+use std::{env, thread};
 
 #[allow(dead_code)]
 pub const TIMEOUT_SECS: Duration = Duration::from_secs(2);
@@ -18,6 +19,77 @@ pub const MAX_WAIT_SECS: Duration = Duration::from_secs(4);
 pub const CLIENT_WAIT_MS: Duration = Duration::from_millis(250);
 #[allow(dead_code)]
 pub const JSON_WAIT_MS: Duration = Duration::from_millis(50);
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocketMode {
+    Connected,
+    Unconnected,
+}
+
+#[allow(dead_code)]
+pub const SOCKET_MODES: [SocketMode; 2] = [SocketMode::Connected, SocketMode::Unconnected];
+
+impl SocketMode {
+    #[allow(dead_code)]
+    pub fn apply(self, cmd: &mut Command) {
+        if matches!(self, SocketMode::Unconnected) {
+            cmd.arg("--debug").arg("no-connect");
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IpFamily {
+    V4,
+    V6,
+}
+
+impl IpFamily {
+    #[allow(dead_code)]
+    pub fn bind_client(self) -> io::Result<UdpSocket> {
+        bind_udp_client(self)
+    }
+
+    #[allow(dead_code)]
+    pub fn spawn_echo(self) -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
+        spawn_udp_echo_server(self)
+    }
+
+    #[allow(dead_code)]
+    pub const fn listen_arg(self) -> &'static str {
+        match self {
+            Self::V4 => "UDP:127.0.0.1:0",
+            Self::V6 => "UDP:[::1]:0",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn is_v6(self) -> bool {
+        matches!(self, Self::V6)
+    }
+}
+
+#[allow(dead_code)]
+pub fn run_cases(protos: &[&str], mut run: impl FnMut(&str, SocketMode) -> bool) -> bool {
+    for &proto in protos {
+        for &mode in &SOCKET_MODES {
+            if !run(proto, mode) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[allow(dead_code)]
+pub const SUPPORTED_PROTOCOLS: &[&str] = &["UDP", "ICMP"];
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+#[allow(dead_code)]
+pub const SUPPORTED_PROTOCOLS: &[&str] = &["UDP"];
 
 /// Ensures the spawned child is terminated on drop (e.g., when a test panics).
 #[allow(dead_code)]
@@ -58,34 +130,41 @@ impl Drop for ChildGuard {
     }
 }
 
-#[allow(dead_code)]
-pub fn bind_udp_v4_client() -> io::Result<UdpSocket> {
-    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+fn bind_udp_client_impl(addr: SocketAddr) -> io::Result<UdpSocket> {
+    let sock = UdpSocket::bind(addr)?;
     sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
     sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
     Ok(sock)
 }
 
 #[allow(dead_code)]
-pub fn random_unprivileged_port_v4() -> io::Result<u16> {
-    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+pub fn bind_udp_client(family: IpFamily) -> io::Result<UdpSocket> {
+    match family {
+        IpFamily::V4 => {
+            bind_udp_client_impl(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)))
+        }
+        IpFamily::V6 => bind_udp_client_impl(SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::LOCALHOST,
+            0,
+            0,
+            0,
+        ))),
+    }
+}
+
+#[allow(dead_code)]
+pub fn random_unprivileged_port(family: IpFamily) -> io::Result<u16> {
+    let sock = bind_udp_client(family)?;
     Ok(sock.local_addr()?.port())
 }
 
-#[allow(dead_code)]
-pub fn bind_udp_v6_client() -> io::Result<UdpSocket> {
-    let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
+fn spawn_udp_echo_server_impl(
+    addr: SocketAddr,
+) -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
+    let sock = UdpSocket::bind(addr)?;
     sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
     sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
-    Ok(sock)
-}
-
-#[allow(dead_code)]
-pub fn spawn_udp_echo_server_v4() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
-    let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
-    let addr = sock.local_addr()?;
+    let local = sock.local_addr()?;
     let handle = thread::spawn(move || {
         let mut buf = [0u8; 65535];
         loop {
@@ -97,27 +176,22 @@ pub fn spawn_udp_echo_server_v4() -> io::Result<(SocketAddr, thread::JoinHandle<
             }
         }
     });
-    Ok((addr, handle))
+    Ok((local, handle))
 }
 
 #[allow(dead_code)]
-pub fn spawn_udp_echo_server_v6() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
-    let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
-    let addr = sock.local_addr()?;
-    let handle = thread::spawn(move || {
-        let mut buf = [0u8; 65535];
-        loop {
-            match sock.recv_from(&mut buf) {
-                Ok((n, src)) => {
-                    let _ = sock.send_to(&buf[..n], src);
-                }
-                Err(_) => {}
-            }
+pub fn spawn_udp_echo_server(family: IpFamily) -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
+    match family {
+        IpFamily::V4 => {
+            spawn_udp_echo_server_impl(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)))
         }
-    });
-    Ok((addr, handle))
+        IpFamily::V6 => spawn_udp_echo_server_impl(SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::LOCALHOST,
+            0,
+            0,
+            0,
+        ))),
+    }
 }
 
 /// Try to locate the built forwarder binary across platforms (Linux/macOS/Windows).
@@ -227,6 +301,24 @@ pub fn find_app_bin() -> Option<String> {
 #[allow(dead_code)]
 pub fn take_child_stdout(child: &mut std::process::Child) -> Option<std::process::ChildStdout> {
     child.stdout.take()
+}
+
+#[allow(dead_code)]
+pub fn run_cli_args(args: &[&str]) -> (Option<i32>, String) {
+    let bin = find_app_bin().expect("could not find app binary");
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn failed");
+
+    let status = child.wait().expect("wait failed");
+    let mut err = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_string(&mut err);
+    }
+    (status.code(), err)
 }
 
 /// Wait for a "Listening on ..." line from a generic reader, and parse the socket address.

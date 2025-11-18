@@ -54,6 +54,8 @@ pub struct Config {
     pub run_as_user: Option<String>,
     #[cfg(unix)]
     pub run_as_group: Option<String>,
+    pub debug_no_connect: bool,
+    pub debug_log_drops: bool,
 }
 
 pub fn parse_args() -> Config {
@@ -71,6 +73,7 @@ pub fn parse_args() -> Config {
              \t--reresolve-secs N       Re-resolve upstream host every N seconds (0=disabled)\n\
              \t--user NAME              Drop privileges to this user (Unix only)\n\
              \t--group NAME             Drop privileges to this group (Unix only)\n\
+             \t--debug WHAT             Enable debug behavior (repeatable); WHAT = no-connect|log-drops\n\
              \t-h, --help               Show this help and exit"
         );
         process::exit(code)
@@ -159,6 +162,8 @@ pub fn parse_args() -> Config {
     let mut run_as_user: Option<String> = None;
     #[cfg(unix)]
     let mut run_as_group: Option<String> = None;
+    let mut debug_no_connect = false;
+    let mut debug_log_drops = false;
 
     // Parse flags using an iterator (no manual index math)
     let mut args_iter = env::args().skip(1).peekable();
@@ -216,6 +221,23 @@ pub fn parse_args() -> Config {
                 let val = get_next_value(&mut args_iter, "--group");
                 set_once(&mut run_as_group, val, "--group");
             }
+            "--debug" => {
+                let val = get_next_value(&mut args_iter, "--debug");
+                for part in val.split(',') {
+                    let flag = part.trim();
+                    if flag.is_empty() {
+                        continue;
+                    }
+                    match flag {
+                        "no-connect" => debug_no_connect = true,
+                        "log-drops" => debug_log_drops = true,
+                        _ => {
+                            eprintln!("--debug expects no-connect or log-drops (got '{flag}')");
+                            print_usage_and_exit(2)
+                        }
+                    }
+                }
+            }
             "-h" | "--help" => print_usage_and_exit(0),
             other => {
                 eprintln!("unknown arg: {other}");
@@ -261,5 +283,7 @@ pub fn parse_args() -> Config {
         run_as_user,
         #[cfg(unix)]
         run_as_group,
+        debug_no_connect,
+        debug_log_drops,
     }
 }

@@ -1,30 +1,10 @@
 mod common;
 
-use crate::common::find_app_bin;
-
-use std::io::Read;
-use std::process::{Command, Stdio};
-
-fn run_args(args: &[&str]) -> (Option<i32>, String) {
-    let bin = find_app_bin().expect("could not find app binary");
-    let mut child = Command::new(bin)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn failed");
-
-    let status = child.wait().expect("wait failed");
-    let mut err = String::new();
-    if let Some(mut s) = child.stderr.take() {
-        let _ = s.read_to_string(&mut err);
-    }
-    (status.code(), err)
-}
+use crate::common::run_cli_args;
 
 #[test]
 fn rejects_missing_required_flags_here() {
-    let (code, err) = run_args(&["--there", "UDP:127.0.0.1:53"]);
+    let (code, err) = run_cli_args(&["--there", "UDP:127.0.0.1:53"]);
     assert_eq!(
         code,
         Some(2),
@@ -41,7 +21,7 @@ fn rejects_missing_required_flags_here() {
 
 #[test]
 fn rejects_missing_required_flags_there() {
-    let (code, err) = run_args(&["--here", "UDP:127.0.0.1:12345"]);
+    let (code, err) = run_cli_args(&["--here", "UDP:127.0.0.1:12345"]);
     assert_eq!(
         code,
         Some(2),
@@ -58,7 +38,7 @@ fn rejects_missing_required_flags_there() {
 
 #[test]
 fn rejects_duplicate_here() {
-    let (code, err) = run_args(&[
+    let (code, err) = run_cli_args(&[
         "--here",
         "UDP:127.0.0.1:1",
         "--here",
@@ -82,7 +62,7 @@ fn rejects_duplicate_here() {
 
 #[test]
 fn rejects_duplicate_there() {
-    let (code, err) = run_args(&[
+    let (code, err) = run_cli_args(&[
         "--here",
         "UDP:127.0.0.1:1",
         "--there",
@@ -106,7 +86,7 @@ fn rejects_duplicate_there() {
 
 #[test]
 fn rejects_duplicate_optional_flags() {
-    let (code, err) = run_args(&[
+    let (code, err) = run_cli_args(&[
         "--here",
         "UDP:127.0.0.1:1",
         "--there",
@@ -132,7 +112,7 @@ fn rejects_duplicate_optional_flags() {
 
 #[test]
 fn rejects_invalid_on_timeout_value() {
-    let (code, err) = run_args(&[
+    let (code, err) = run_cli_args(&[
         "--here",
         "UDP:127.0.0.1:1",
         "--there",
@@ -156,7 +136,7 @@ fn rejects_invalid_on_timeout_value() {
 
 #[test]
 fn rejects_invalid_numeric_values() {
-    let (code, err) = run_args(&[
+    let (code, err) = run_cli_args(&[
         "--here",
         "UDP:127.0.0.1:1",
         "--there",
@@ -176,7 +156,7 @@ fn rejects_invalid_numeric_values() {
 
 #[test]
 fn rejects_invalid_here_value() {
-    let (code, err) = run_args(&["--here", "XYZ:127.0.0.1:abc", "--there", "UDP:127.0.0.1:53"]);
+    let (code, err) = run_cli_args(&["--here", "XYZ:127.0.0.1:abc", "--there", "UDP:127.0.0.1:53"]);
     assert_eq!(
         code,
         Some(2),
@@ -189,7 +169,7 @@ fn rejects_invalid_here_value() {
 
 #[test]
 fn rejects_invalid_there_value() {
-    let (code, err) = run_args(&["--here", "UDP:127.0.0.1:1", "--there", "UDP:not-an-addr"]);
+    let (code, err) = run_cli_args(&["--here", "UDP:127.0.0.1:1", "--there", "UDP:not-an-addr"]);
     assert_eq!(
         code,
         Some(2),
@@ -198,4 +178,75 @@ fn rejects_invalid_there_value() {
         err
     );
     assert!(err.contains("--there"), "stderr: {}", err);
+}
+
+#[test]
+fn rejects_invalid_debug_value() {
+    let (code, err) = run_cli_args(&[
+        "--here",
+        "UDP:127.0.0.1:1",
+        "--there",
+        "UDP:127.0.0.1:2",
+        "--debug",
+        "foo",
+    ]);
+    assert_eq!(
+        code,
+        Some(2),
+        "expected exit code 2, got {:?}; stderr: {}",
+        code,
+        err
+    );
+    assert!(
+        err.contains("--debug") && err.contains("no-connect") && err.contains("log-drops"),
+        "stderr: {}",
+        err
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_duplicate_user_flags() {
+    let (code, err) = run_cli_args(&[
+        "--here",
+        "UDP:127.0.0.1:1",
+        "--there",
+        "UDP:127.0.0.1:2",
+        "--user",
+        "nobody",
+        "--user",
+        "daemon",
+    ]);
+    assert_eq!(
+        code,
+        Some(2),
+        "expected exit code 2, got {:?}; stderr: {}",
+        code,
+        err
+    );
+    assert!(
+        err.contains("--user specified multiple times"),
+        "stderr: {}",
+        err
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_missing_user_value() {
+    let (code, err) = run_cli_args(&[
+        "--here",
+        "UDP:127.0.0.1:1",
+        "--there",
+        "UDP:127.0.0.1:2",
+        "--user",
+    ]);
+    assert_eq!(
+        code,
+        Some(2),
+        "expected exit code 2, got {:?}; stderr: {}",
+        code,
+        err
+    );
+    assert!(err.contains("--user requires a value"), "stderr: {}", err);
 }

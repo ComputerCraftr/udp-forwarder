@@ -79,7 +79,7 @@ fn run_client_to_upstream_thread(
                             &dest_sa,
                             dest_port_id,
                             cfg.listen_port_id,
-                            false,
+                            cfg.debug_log_drops,
                         );
                     }
                 }
@@ -105,7 +105,9 @@ fn run_client_to_upstream_thread(
                     // First lock: publish client and connect the socket for fast path
                     if !locked.load(AtomOrdering::Relaxed) {
                         local_unconnected_client = Some(src);
-                        if let Err(e) = client_sock.connect(&src_sa) {
+                        if cfg.debug_no_connect {
+                            println!("Locked to single client {} (not connected)", src);
+                        } else if let Err(e) = client_sock.connect(&src_sa) {
                             eprintln!("connect client_sock to {} failed: {}", src, e);
                             println!("Locked to single client {} (not connected)", src);
                         } else {
@@ -144,7 +146,7 @@ fn run_client_to_upstream_thread(
                             &dest_sa,
                             dest_port_id,
                             cfg.listen_port_id,
-                            false,
+                            cfg.debug_log_drops,
                         );
                     }
                 }
@@ -208,7 +210,7 @@ fn run_upstream_to_client_thread(
                         &dest_sa,
                         *dest_port_id,
                         up_sock_port_id,
-                        false,
+                        cfg.debug_log_drops,
                     );
                 } else if let Some((dest, connected)) = *client_peer_connected.lock().unwrap() {
                     let dest_sa = SockAddr::from(dest);
@@ -230,7 +232,7 @@ fn run_upstream_to_client_thread(
                         &dest_sa,
                         dest_port_id,
                         up_sock_port_id,
-                        false,
+                        cfg.debug_log_drops,
                     );
 
                     local_dest = Some((dest, dest_sa, dest_port_id, dest_connected));
@@ -273,16 +275,23 @@ fn run_watchdog_thread(
             if expired {
                 match cfg.on_timeout {
                     TimeoutAction::Drop => {
+                        let mut guard = client_peer_connected.lock().unwrap();
+                        let was_connected = guard
+                            .as_ref()
+                            .map(|(_, connected)| *connected)
+                            .unwrap_or(false);
                         eprintln!(
                             "Idle timeout reached ({}s): dropping locked client; waiting for a new client",
                             cfg.timeout_secs
                         );
-                        if let Err(e) = udp_disconnect(&client_sock) {
-                            eprintln!("udp disconnect failed: {}", e);
-                            exit_code_set.store((1 << 31) | 1, AtomOrdering::Relaxed);
-                            return;
+                        if was_connected {
+                            if let Err(e) = udp_disconnect(&client_sock) {
+                                eprintln!("udp disconnect failed: {}", e);
+                                exit_code_set.store((1 << 31) | 1, AtomOrdering::Relaxed);
+                                return;
+                            }
                         }
-                        *client_peer_connected.lock().unwrap() = None;
+                        *guard = None;
                         locked.store(false, AtomOrdering::Relaxed);
                         last_seen_ns.store(0, AtomOrdering::Relaxed);
                     }

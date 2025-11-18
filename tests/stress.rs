@@ -1,10 +1,6 @@
 mod common;
 
-use crate::common::{
-    ChildGuard, JSON_WAIT_MS, MAX_WAIT_SECS, TIMEOUT_SECS, bind_udp_v4_client, find_app_bin,
-    random_unprivileged_port_v4, spawn_udp_echo_server_v4, take_child_stdout,
-    wait_for_listen_addr_from, wait_for_stats_json_from,
-};
+use crate::common::*;
 #[cfg(unix)]
 use nix::unistd;
 
@@ -14,28 +10,24 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore] // opt-in: `cargo test --test stress stress_one_minute_ipv4_udp -- --ignored`
-fn stress_one_minute_ipv4_udp() {
-    stress_one_minute_ipv4("UDP");
-}
-
-#[test]
-#[ignore] // opt-in: `cargo test --test stress stress_one_minute_ipv4_icmp -- --ignored`
-fn stress_one_minute_ipv4_icmp() {
-    stress_one_minute_ipv4("ICMP");
+#[ignore] // opt-in: `cargo test --test stress stress_one_minute_ipv4_all -- --ignored`
+fn stress_one_minute_ipv4_all() {
+    for &proto in SUPPORTED_PROTOCOLS {
+        stress_one_minute_ipv4(proto);
+    }
 }
 
 fn stress_one_minute_ipv4(proto: &str) {
     // Client socket bound to ephemeral local port
-    let client_sock = bind_udp_v4_client().expect("IPv4 loopback not available");
+    let client_sock = bind_udp_client(IpFamily::V4).expect("IPv4 loopback not available");
 
     // Upstream echo server
     let up_addr = if !proto.eq_ignore_ascii_case("icmp") {
-        spawn_udp_echo_server_v4()
+        spawn_udp_echo_server(IpFamily::V4)
             .expect("IPv4 echo server could not bind")
             .0
     } else {
-        let ident = random_unprivileged_port_v4().expect("random ICMP identifier");
+        let ident = random_unprivileged_port(IpFamily::V4).expect("random ICMP identifier");
         format!("127.0.0.1:{ident}")
             .parse::<SocketAddr>()
             .expect("IPv4 socket address could not be parsed")
