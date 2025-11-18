@@ -41,14 +41,15 @@ pub enum TimeoutAction {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub listen_addr: SocketAddr,
-    pub listen_proto: SupportedProtocol,   // UDP | ICMP
-    pub upstream_addr: String,             // FQDN:port or IP:port
+    pub listen_port_id: u16,             // Cached UDP port or ICMP identifier
+    pub listen_proto: SupportedProtocol, // UDP | ICMP
+    pub upstream_addr: String,           // FQDN:port or IP:port
     pub upstream_proto: SupportedProtocol, // UDP | ICMP
-    pub timeout_secs: u64,                 // idle timeout for single client
-    pub on_timeout: TimeoutAction,         // Drop | Exit
-    pub stats_interval_mins: u32,          // JSON stats print interval
-    pub max_payload: usize,                // optional user-specified MTU/payload limit
-    pub reresolve_secs: u64,               // 0 = disabled
+    pub timeout_secs: u64,               // idle timeout for single client
+    pub on_timeout: TimeoutAction,       // Drop | Exit
+    pub stats_interval_mins: u32,        // JSON stats print interval
+    pub max_payload: usize,              // optional user-specified MTU/payload limit
+    pub reresolve_secs: u64,             // 0 = disabled
     #[cfg(unix)]
     pub run_as_user: Option<String>,
     #[cfg(unix)]
@@ -107,10 +108,10 @@ pub fn parse_args() -> Config {
     }
 
     // Address helpers.
-    fn parse_here(s: &str) -> (SupportedProtocol, SocketAddr) {
+    fn parse_here(s: &str) -> (SocketAddr, u16, SupportedProtocol) {
         let (proto, addr_str) = split_proto(s, "--here");
         match resolve_first(addr_str) {
-            Ok(sa) => (proto, sa),
+            Ok(sa) => (sa, sa.port(), proto),
             Err(e) => {
                 eprintln!(
                     "--here: failed to parse and resolve host:port or ip:port (got '{s}'): {e}"
@@ -119,10 +120,10 @@ pub fn parse_args() -> Config {
             }
         }
     }
-    fn validate_there(s: &str) -> (SupportedProtocol, String) {
+    fn validate_there(s: &str) -> (String, u16, SupportedProtocol) {
         let (proto, addr_str) = split_proto(s, "--there");
         match resolve_first(addr_str) {
-            Ok(sa) => (proto, sa.to_string()),
+            Ok(sa) => (sa.to_string(), sa.port(), proto),
             Err(e) => {
                 eprintln!(
                     "--there: failed to parse and resolve host:port or ip:port (got '{s}'): {e}"
@@ -144,8 +145,8 @@ pub fn parse_args() -> Config {
     }
 
     // Required
-    let mut listen_opt: Option<(SupportedProtocol, SocketAddr)> = None;
-    let mut upstream_opt: Option<(SupportedProtocol, String)> = None;
+    let mut listen_opt: Option<(SocketAddr, u16, SupportedProtocol)> = None;
+    let mut upstream_opt: Option<(String, u16, SupportedProtocol)> = None;
 
     // Optional (track presence to reject duplicates cleanly)
     let mut timeout_secs: Option<u64> = None;
@@ -223,14 +224,14 @@ pub fn parse_args() -> Config {
         }
     }
 
-    let (listen_proto, listen_addr) = match listen_opt {
+    let (listen_addr, listen_port_id, listen_proto) = match listen_opt {
         Some(t) => t,
         None => {
             eprintln!("missing required flag: --here <protocol:listen_ip:port>");
             print_usage_and_exit(2)
         }
     };
-    let (upstream_proto, upstream_addr) = match upstream_opt {
+    let (upstream_addr, _upstream_port_id, upstream_proto) = match upstream_opt {
         Some(t) => t,
         None => {
             eprintln!("missing required flag: --there <protocol:upstream_host_or_ip:port>");
@@ -247,6 +248,7 @@ pub fn parse_args() -> Config {
 
     Config {
         listen_addr,
+        listen_port_id,
         listen_proto,
         upstream_addr,
         upstream_proto,

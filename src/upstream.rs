@@ -20,10 +20,10 @@ pub struct UpstreamManager {
 
 impl UpstreamManager {
     pub fn new(initial_target: &str, initial_proto: SupportedProtocol) -> io::Result<Self> {
-        let addr = resolve_first(initial_target)?;
-        let sock = make_upstream_socket_for(addr, initial_proto)?;
+        let dest = resolve_first(initial_target)?;
+        let (sock, _actual_dest) = make_upstream_socket_for(dest, initial_proto)?;
         Ok(Self {
-            current_addr: Mutex::new(addr),
+            current_addr: Mutex::new(dest),
             sock: Mutex::new(sock),
             sock_proto: initial_proto,
             version: AtomicU64::new(0),
@@ -47,7 +47,7 @@ impl UpstreamManager {
         let (fam_flip, changed) = {
             let mut cur = self.current_addr.lock().unwrap();
             let prev = *cur;
-            let changed = prev != fresh;
+            let changed = prev.ip() != fresh.ip();
             let fam_flip = if changed {
                 *cur = fresh;
                 family_changed(prev, fresh)
@@ -61,7 +61,7 @@ impl UpstreamManager {
         let ret_sock = if fam_flip {
             println!("{context}: upstream {fresh} (family changed; upstream socket swapped)");
             // Family changed: create a new **connected** upstream socket and swap it in.
-            let new_sock = make_upstream_socket_for(fresh, self.sock_proto)?; // already connected
+            let (new_sock, _new_dest) = make_upstream_socket_for(fresh, self.sock_proto)?; // already connected
             {
                 let mut guard = self.sock.lock().unwrap();
                 *guard = new_sock.try_clone()?;
@@ -70,8 +70,8 @@ impl UpstreamManager {
         } else if changed {
             println!("{context}: upstream {fresh}");
             // Same family, different address: reconnect existing socket in place.
-            let guard = self.sock.lock().unwrap();
             let saddr = SockAddr::from(fresh);
+            let guard = self.sock.lock().unwrap();
             guard.connect(&saddr)?;
             // Return a clone of the now-updated internal socket
             guard.try_clone()?

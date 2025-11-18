@@ -722,7 +722,7 @@ fn relock_after_timeout_drop_ipv4(proto: &str) {
     assert_eq!(&buf[..n], payload_a);
 
     // Now go idle > timeout so watchdog drops the lock and disconnects
-    thread::sleep(TIMEOUT_SECS + CLIENT_WAIT_MS);
+    thread::sleep(MAX_WAIT_SECS);
 
     // Ensure process did NOT exit under on-timeout=drop
     if let Ok(Some(status)) = child.try_wait() {

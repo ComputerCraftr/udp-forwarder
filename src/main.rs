@@ -33,7 +33,7 @@ fn run_client_to_upstream_thread(
     t_start: Instant,
     cfg: &Config,
     client_sock: &Socket,
-    client_peer: &Mutex<Option<SocketAddr>>,
+    client_peer_connected: &Mutex<Option<(SocketAddr, bool)>>,
     locked: &AtomicBool,
     last_seen_ns: &AtomicU64,
     upstream_mgr: &UpstreamManager,
@@ -43,6 +43,7 @@ fn run_client_to_upstream_thread(
     // Cache upstream socket and destination; refresh only when version changes
     let (mut up_sock, mut dest, mut ver) = upstream_mgr.refresh_handles();
     let mut dest_sa = SockAddr::from(dest);
+    let mut dest_port_id = dest.port();
     // Once locked, connect client socket to the peer and switch to recv()
     let mut local_unconnected_client: Option<SocketAddr> = Some(cfg.listen_addr);
     loop {
@@ -50,6 +51,7 @@ fn run_client_to_upstream_thread(
         if ver != upstream_mgr.version() {
             (up_sock, dest, ver) = upstream_mgr.refresh_handles();
             dest_sa = SockAddr::from(dest);
+            dest_port_id = dest.port();
         }
         if local_unconnected_client.is_none() {
             // Connected fast path: only packets from the locked client are delivered
@@ -61,7 +63,6 @@ fn run_client_to_upstream_thread(
                     } else {
                         send_payload(
                             true,
-                            true,
                             t_start,
                             t_recv,
                             cfg,
@@ -69,9 +70,11 @@ fn run_client_to_upstream_thread(
                             last_seen_ns,
                             &up_sock,
                             &buf[..len],
+                            true, // Upstream socket is always connected
                             dest,
                             &dest_sa,
-                            cfg.listen_addr,
+                            dest_port_id,
+                            cfg.listen_port_id,
                             false,
                         );
                     }
@@ -98,14 +101,16 @@ fn run_client_to_upstream_thread(
                     // First lock: publish client and connect the socket for fast path
                     if !locked.load(AtomOrdering::Relaxed) {
                         local_unconnected_client = Some(src);
-                        *client_peer.lock().unwrap() = Some(src);
-                        locked.store(true, AtomOrdering::Relaxed);
                         if let Err(e) = client_sock.connect(&src_sa) {
                             eprintln!("connect client_sock to {} failed: {}", src, e);
+                            println!("Locked to single client {} (not connected)", src);
                         } else {
                             local_unconnected_client = None;
                             println!("Locked to single client {} (connected)", src);
                         }
+                        *client_peer_connected.lock().unwrap() =
+                            Some((src, local_unconnected_client.is_none()));
+                        locked.store(true, AtomOrdering::Relaxed);
                         if let Ok((new_sock, new_dest, new_ver)) =
                             upstream_mgr.apply_fresh(&cfg.upstream_addr, "Re-resolved")
                         {
@@ -113,6 +118,7 @@ fn run_client_to_upstream_thread(
                             dest = new_dest;
                             ver = new_ver;
                             dest_sa = SockAddr::from(dest);
+                            dest_port_id = dest.port();
                         }
                     }
 
@@ -120,7 +126,6 @@ fn run_client_to_upstream_thread(
                     if Some(src) == local_unconnected_client || local_unconnected_client.is_none() {
                         send_payload(
                             true,
-                            local_unconnected_client.is_none(),
                             t_start,
                             t_recv,
                             cfg,
@@ -128,9 +133,11 @@ fn run_client_to_upstream_thread(
                             last_seen_ns,
                             &up_sock,
                             &buf[..len],
+                            true, // Upstream socket is always connected
                             dest,
                             &dest_sa,
-                            cfg.listen_addr,
+                            dest_port_id,
+                            cfg.listen_port_id,
                             false,
                         );
                     }
@@ -151,7 +158,7 @@ fn run_upstream_to_client_thread(
     t_start: Instant,
     cfg: &Config,
     client_sock: &Socket,
-    client_peer: &Mutex<Option<SocketAddr>>,
+    client_peer_connected: &Mutex<Option<(SocketAddr, bool)>>,
     locked: &AtomicBool,
     last_seen_ns: &AtomicU64,
     upstream_mgr: &UpstreamManager,
@@ -160,12 +167,14 @@ fn run_upstream_to_client_thread(
     let mut buf = vec![0u8; 65535];
     // Cache upstream socket and destination; refresh only when version changes
     let (mut up_sock, mut up_sock_addr, mut ver) = upstream_mgr.refresh_handles();
+    let mut up_sock_port_id = up_sock_addr.port();
     // Local cache of the locked client destination for fast send
-    let mut local_dest: Option<(SocketAddr, SockAddr)> = None;
+    let mut local_dest: Option<(SocketAddr, SockAddr, u16, bool)> = None;
     loop {
         // Cheap hot-path check: refresh local handles only when version changes
         if ver != upstream_mgr.version() {
             (up_sock, up_sock_addr, ver) = upstream_mgr.refresh_handles();
+            up_sock_port_id = up_sock_addr.port();
         }
         match up_sock.recv(as_uninit_mut(&mut buf)) {
             Ok(len) => {
@@ -173,10 +182,11 @@ fn run_upstream_to_client_thread(
                 // Refresh local cached destination when global lock state changes
                 if !locked.load(AtomOrdering::Relaxed) {
                     local_dest = None;
-                } else if let Some((dest, dest_sa)) = local_dest.as_ref() {
+                } else if let Some((dest, dest_sa, dest_port_id, dest_connected)) =
+                    local_dest.as_ref()
+                {
                     send_payload(
                         false,
-                        true,
                         t_start,
                         t_recv,
                         cfg,
@@ -184,17 +194,20 @@ fn run_upstream_to_client_thread(
                         last_seen_ns,
                         client_sock,
                         &buf[..len],
+                        *dest_connected,
                         *dest,
                         &dest_sa,
-                        up_sock_addr,
+                        *dest_port_id,
+                        up_sock_port_id,
                         false,
                     );
-                } else if let Some(dest) = *client_peer.lock().unwrap() {
+                } else if let Some((dest, connected)) = *client_peer_connected.lock().unwrap() {
                     let dest_sa = SockAddr::from(dest);
+                    let dest_port_id = dest.port();
+                    let dest_connected = connected;
 
                     send_payload(
                         false,
-                        true,
                         t_start,
                         t_recv,
                         cfg,
@@ -202,17 +215,23 @@ fn run_upstream_to_client_thread(
                         last_seen_ns,
                         client_sock,
                         &buf[..len],
+                        dest_connected,
                         dest,
                         &dest_sa,
-                        up_sock_addr,
+                        dest_port_id,
+                        up_sock_port_id,
                         false,
                     );
 
-                    local_dest = Some((dest, dest_sa));
+                    local_dest = Some((dest, dest_sa, dest_port_id, dest_connected));
                 }
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                if !locked.load(AtomOrdering::Relaxed) {
+                    local_dest = None;
+                }
             }
             Err(e) => {
                 eprintln!("recv upstream (connected) error: {}", e);
@@ -226,7 +245,7 @@ fn run_watchdog_thread(
     t_start: Instant,
     cfg: &Config,
     client_sock: &Socket,
-    client_peer: &Mutex<Option<SocketAddr>>,
+    client_peer_connected: &Mutex<Option<(SocketAddr, bool)>>,
     locked: &AtomicBool,
     last_seen_ns: &AtomicU64,
     exit_code_set: &AtomicU32,
@@ -253,7 +272,7 @@ fn run_watchdog_thread(
                             exit_code_set.store((1 << 31) | 1, AtomOrdering::Relaxed);
                             return;
                         }
-                        *client_peer.lock().unwrap() = None;
+                        *client_peer_connected.lock().unwrap() = None;
                         locked.store(false, AtomOrdering::Relaxed);
                         last_seen_ns.store(0, AtomOrdering::Relaxed);
                     }
@@ -292,11 +311,12 @@ fn main() -> io::Result<()> {
     let (client_sock_raw, actual_listen) = make_socket(
         user_requested_cfg.listen_addr,
         user_requested_cfg.listen_proto,
-        5000,
+        1000,
         false,
         user_requested_cfg.listen_proto == SupportedProtocol::ICMP,
     )?;
     user_requested_cfg.listen_addr = actual_listen;
+    user_requested_cfg.listen_port_id = actual_listen.port();
     let client_sock = Arc::new(client_sock_raw);
 
     let cfg = Arc::new(user_requested_cfg);
@@ -312,7 +332,7 @@ fn main() -> io::Result<()> {
     drop_privileges(&cfg)?;
 
     // Single-client state
-    let client_peer = Arc::new(Mutex::new(None));
+    let client_peer_connected = Arc::new(Mutex::new(None));
     let locked = Arc::new(AtomicBool::new(false));
     let last_seen_ns = Arc::new(AtomicU64::new(0));
 
@@ -343,7 +363,7 @@ fn main() -> io::Result<()> {
     {
         let cfg_a = Arc::clone(&cfg);
         let client_sock_a = Arc::clone(&client_sock);
-        let client_peer_a = Arc::clone(&client_peer);
+        let client_peer_a = Arc::clone(&client_peer_connected);
         let locked_a = Arc::clone(&locked);
         let last_seen_a = Arc::clone(&last_seen_ns);
         let upstream_mgr_a = Arc::clone(&upstream_mgr);
@@ -367,7 +387,7 @@ fn main() -> io::Result<()> {
     {
         let cfg_b = Arc::clone(&cfg);
         let client_sock_b = Arc::clone(&client_sock);
-        let client_peer_b = Arc::clone(&client_peer);
+        let client_peer_b = Arc::clone(&client_peer_connected);
         let locked_b = Arc::clone(&locked);
         let last_seen_b = Arc::clone(&last_seen_ns);
         let upstream_mgr_b = Arc::clone(&upstream_mgr);
@@ -391,7 +411,7 @@ fn main() -> io::Result<()> {
     {
         let cfg_w = Arc::clone(&cfg);
         let client_sock_w = Arc::clone(&client_sock);
-        let client_peer_w = Arc::clone(&client_peer);
+        let client_peer_w = Arc::clone(&client_peer_connected);
         let locked_w = Arc::clone(&locked);
         let last_seen_w = Arc::clone(&last_seen_ns);
         let exit_code_set_w = Arc::clone(&exit_code_set);
@@ -415,7 +435,7 @@ fn main() -> io::Result<()> {
     // Stats thread
     stats.spawn_stats_printer(
         cfg.listen_proto,
-        Arc::clone(&client_peer),
+        Arc::clone(&client_peer_connected),
         Arc::clone(&upstream_mgr),
         t_start,
         u64::from(cfg.stats_interval_mins).saturating_mul(60),

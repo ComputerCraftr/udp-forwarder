@@ -231,7 +231,7 @@ impl Stats {
     fn print_snapshot(
         &self,
         client_proto: SupportedProtocol,
-        client_peer: &Mutex<Option<SocketAddr>>,
+        client_peer_connected: &Mutex<Option<(SocketAddr, bool)>>,
         upstream_mgr: &UpstreamManager,
     ) {
         let (
@@ -268,10 +268,10 @@ impl Stats {
         let u2c_us_ewma = u2c_lat_ewma_ns / 1000;
         let c2u_us_max = c2u_lat_max_ns / 1000;
         let u2c_us_max = u2c_lat_max_ns / 1000;
-        let client_opt = { *client_peer.lock().unwrap() };
+        let client_opt = { *client_peer_connected.lock().unwrap() };
         let locked = client_opt.is_some();
         let client_addr = client_opt
-            .map(|x| x.to_string())
+            .map(|x| x.0.to_string())
             .unwrap_or_else(|| "null".to_string());
         let (upstream_addr, upstream_proto) = { upstream_mgr.current_dest() };
         let line = json!({
@@ -304,7 +304,7 @@ impl Stats {
     pub fn spawn_stats_printer(
         self: &Arc<Self>,
         client_proto: SupportedProtocol,
-        client_peer: Arc<Mutex<Option<SocketAddr>>>,
+        client_peer_connected: Arc<Mutex<Option<(SocketAddr, bool)>>>,
         upstream_mgr: Arc<UpstreamManager>,
         start: Instant,
         every_secs: u64,
@@ -392,7 +392,7 @@ impl Stats {
                 // Check for cooperative shutdown **after** EWMA is up to date
                 let exit_code_local = exit_code_set.load(AtomOrdering::Relaxed);
                 if (exit_code_local & (1 << 31)) != 0 {
-                    stats.print_snapshot(client_proto, &client_peer, &upstream_mgr);
+                    stats.print_snapshot(client_proto, &client_peer_connected, &upstream_mgr);
                     let exit_code = (exit_code_local & !(1 << 31)) as i32;
                     process::exit(exit_code);
                 }
@@ -400,7 +400,7 @@ impl Stats {
                 // Print only on schedule
                 let now = Instant::now();
                 if now >= next_print_at {
-                    stats.print_snapshot(client_proto, &client_peer, &upstream_mgr);
+                    stats.print_snapshot(client_proto, &client_peer_connected, &upstream_mgr);
                     // Advance the next print boundary, accounting for any missed periods
                     let elapsed = now.duration_since(next_print_at).as_secs();
                     let skipped = (elapsed / every) + 1; // at least one boundary

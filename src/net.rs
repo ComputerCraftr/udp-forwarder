@@ -38,8 +38,8 @@ pub fn make_socket(
     // Raw ICMP: use well-known protocol numbers (see IANA)
     // IPv4 ICMP = 1, IPv6 ICMP = 58; same on Unix and Windows.
     let (domain, icmp_proto) = match bind_addr {
-        SocketAddr::V6(_) => (Domain::IPV6, Protocol::from(58)), // IPPROTO_ICMPV6 = 58
-        _ => (Domain::IPV4, Protocol::from(1)),                  // IPPROTO_ICMP = 1
+        SocketAddr::V6(_) => (Domain::IPV6, Protocol::ICMPV6),
+        _ => (Domain::IPV4, Protocol::ICMPV4),
     };
 
     let sock = match proto {
@@ -111,7 +111,6 @@ fn make_icmp_socket(domain: Domain, proto: Protocol, force_raw: bool) -> io::Res
 
 pub fn send_payload(
     c2u: bool,
-    connected: bool,
     t_start: Instant,
     t_recv: Instant,
     cfg: &Config,
@@ -119,9 +118,11 @@ pub fn send_payload(
     last_seen: &AtomicU64,
     sock: &Socket,
     buf: &[u8],
+    sock_connected: bool,
     dest: SocketAddr,
     dest_sa: &SockAddr,
-    recv: SocketAddr,
+    dest_port_id: u16,
+    recv_port_id: u16,
     debug: bool,
 ) {
     // Determine source/destination protocol for this direction once.
@@ -137,7 +138,7 @@ pub fn send_payload(
             let res = parse_icmp_echo_header(buf);
             (res.0, res.1, res.2, Some(res.3), res.4)
         }
-        _ => (true, buf, recv.port(), None, c2u),
+        _ => (true, buf, recv_port_id, None, c2u),
     };
 
     // Size check on the normalized payload.
@@ -150,7 +151,7 @@ pub fn send_payload(
         }
         stats.drop_err(c2u);
         return;
-    } else if c2u != src_is_req || src_ident != recv.port() {
+    } else if c2u != src_is_req || src_ident != recv_port_id {
         // If this is the client->upstream direction and we received an ICMP Echo *reply* or
         // upstream->client and we received an ICMP Echo *request*, drop it to avoid feedback loops.
         // Also, ignore all packets with the wrong identity field.
@@ -175,11 +176,17 @@ pub fn send_payload(
 
     // Send according to destination protocol and connection state.
     let send_res = match dst_proto {
-        SupportedProtocol::ICMP => {
-            send_icmp_echo(sock, dest, dest_sa, dest.port(), !c2u, payload, connected)
-        }
+        SupportedProtocol::ICMP => send_icmp_echo(
+            sock,
+            dest,
+            dest_sa,
+            dest_port_id,
+            !c2u,
+            payload,
+            sock_connected,
+        ),
         _ => {
-            if connected {
+            if sock_connected {
                 sock.send(payload)
             } else {
                 sock.send_to(payload, &dest_sa)
@@ -366,8 +373,11 @@ fn send_icmp_echo(
 }
 
 /// Create and connect a socket suitable for forwarding data to `dest`.
-pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> io::Result<Socket> {
-    let local_port = if matches!(proto, SupportedProtocol::ICMP) {
+pub fn make_upstream_socket_for(
+    dest: SocketAddr,
+    proto: SupportedProtocol,
+) -> io::Result<(Socket, SocketAddr)> {
+    let local_port = if proto == SupportedProtocol::ICMP {
         dest.port()
     } else {
         0
@@ -377,12 +387,13 @@ pub fn make_upstream_socket_for(dest: SocketAddr, proto: SupportedProtocol) -> i
         _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), local_port),
     };
 
-    let (sock, _) = make_socket(bind_addr, proto, 5000, false, false)?;
+    let (sock, _) = make_socket(bind_addr, proto, 1000, false, false)?;
 
     let dest_sa = SockAddr::from(dest);
     sock.connect(&dest_sa)?;
+    let actual_dest = sock.peer_addr()?.as_socket().unwrap_or(bind_addr);
 
-    Ok(sock)
+    Ok((sock, actual_dest))
 }
 
 #[inline]

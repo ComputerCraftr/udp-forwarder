@@ -61,8 +61,8 @@ impl Drop for ChildGuard {
 #[allow(dead_code)]
 pub fn bind_udp_v4_client() -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
     Ok(sock)
 }
 
@@ -75,16 +75,16 @@ pub fn random_unprivileged_port_v4() -> io::Result<u16> {
 #[allow(dead_code)]
 pub fn bind_udp_v6_client() -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
     Ok(sock)
 }
 
 #[allow(dead_code)]
 pub fn spawn_udp_echo_server_v4() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
     let sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
     let addr = sock.local_addr()?;
     let handle = thread::spawn(move || {
         let mut buf = [0u8; 65535];
@@ -103,8 +103,8 @@ pub fn spawn_udp_echo_server_v4() -> io::Result<(SocketAddr, thread::JoinHandle<
 #[allow(dead_code)]
 pub fn spawn_udp_echo_server_v6() -> io::Result<(SocketAddr, thread::JoinHandle<()>)> {
     let sock = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))?;
-    sock.set_read_timeout(Some(Duration::from_millis(5000)))?;
-    sock.set_write_timeout(Some(Duration::from_millis(5000)))?;
+    sock.set_read_timeout(Some(Duration::from_millis(1000)))?;
+    sock.set_write_timeout(Some(Duration::from_millis(1000)))?;
     let addr = sock.local_addr()?;
     let handle = thread::spawn(move || {
         let mut buf = [0u8; 65535];
