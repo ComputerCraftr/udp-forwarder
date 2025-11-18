@@ -222,10 +222,8 @@ impl Stats {
 
     #[inline]
     fn safe_println(s: &str) {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(s.as_bytes());
-        let _ = out.write_all(b"\n");
-        let _ = out.flush();
+        log_info!("{}", s);
+        let _ = std::io::stdout().flush();
     }
 
     fn print_snapshot(

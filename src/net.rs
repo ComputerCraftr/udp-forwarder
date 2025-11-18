@@ -92,8 +92,8 @@ fn make_icmp_socket(domain: Domain, proto: Protocol, force_raw: bool) -> io::Res
         match Socket::new(domain, Type::DGRAM, Some(proto)) {
             Ok(sock) => Ok(sock),
             Err(err) => {
-                eprintln!(
-                    "Warning: ICMP datagram sockets unavailable on {:?} ({err}); falling back to raw sockets",
+                log_warn!(
+                    "ICMP datagram sockets unavailable on {:?} ({err}); falling back to raw sockets",
                     domain
                 );
                 Socket::new(domain, Type::RAW, Some(proto))
@@ -147,9 +147,10 @@ pub fn send_payload(
 
     // Handle forwarding errors
     if !icmp_success {
-        if log_drops {
-            eprintln!("Dropping packet: Invalid or truncated ICMP Echo header");
-        }
+        log_debug!(
+            log_drops,
+            "Dropping packet: Invalid or truncated ICMP Echo header"
+        );
         stats.drop_err(c2u);
         return;
     } else if c2u != src_is_req || src_ident != recv_port_id {
@@ -160,12 +161,12 @@ pub fn send_payload(
         // Not an error; just ignore replies from the client side.
         return;
     } else if cfg.max_payload != 0 && len > cfg.max_payload {
-        if log_drops {
-            eprintln!(
-                "Dropping packet: {} bytes exceeds max {}",
-                len, cfg.max_payload
-            );
-        }
+        log_debug!(
+            log_drops,
+            "Dropping packet: {} bytes exceeds max {}",
+            len,
+            cfg.max_payload
+        );
         stats.drop_oversize(c2u);
         return;
     }
@@ -203,9 +204,7 @@ pub fn send_payload(
             stats.send_add(c2u, len as u64, t_recv, t_send);
         }
         Err(e) => {
-            if log_drops {
-                eprintln!("Send to '{}' error: {}", dest, e);
-            }
+            log_debug!(log_drops, "Send to '{}' error: {}", dest, e);
             stats.drop_err(c2u);
         }
     }

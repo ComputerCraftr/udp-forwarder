@@ -59,7 +59,7 @@ impl UpstreamManager {
 
         // Prepare a socket to return while also updating the internal socket state.
         let ret_sock = if fam_flip {
-            println!("{context}: upstream {fresh} (family changed; upstream socket swapped)");
+            log_info!("{context}: upstream {fresh} (family changed; upstream socket swapped)");
             // Family changed: create a new **connected** upstream socket and swap it in.
             let (new_sock, _new_dest) = make_upstream_socket_for(fresh, self.sock_proto)?; // already connected
             {
@@ -68,7 +68,7 @@ impl UpstreamManager {
             }
             new_sock
         } else if changed {
-            println!("{context}: upstream {fresh}");
+            log_info!("{context}: upstream {fresh}");
             // Same family, different address: reconnect existing socket in place.
             let saddr = SockAddr::from(fresh);
             let guard = self.sock.lock().unwrap();

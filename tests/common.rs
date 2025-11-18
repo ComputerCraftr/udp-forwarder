@@ -20,6 +20,16 @@ pub const CLIENT_WAIT_MS: Duration = Duration::from_millis(250);
 #[allow(dead_code)]
 pub const JSON_WAIT_MS: Duration = Duration::from_millis(50);
 
+fn strip_log_prefix(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        if let Some(idx) = rest.find("] ") {
+            return &rest[idx + 2..];
+        }
+    }
+    trimmed
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketMode {
@@ -328,6 +338,7 @@ pub fn wait_for_listen_addr_from<R: Read>(
     max_wait: Duration,
 ) -> Option<SocketAddr> {
     let parse_sa = |line: &str| {
+        let line = strip_log_prefix(line);
         // Take the left side before the first comma and strip the protocol token
         let addr = line
             .strip_prefix(PREFIX)?
@@ -371,6 +382,7 @@ pub fn wait_for_locked_client_from<R: Read>(
     max_wait: Duration,
 ) -> Option<SocketAddr> {
     let parse_sa = |line: &str| {
+        let line = strip_log_prefix(line);
         // Take the left side before the second space
         // Expected form: "<addr> (connected)\n"
         let addr = line
@@ -422,8 +434,9 @@ pub fn wait_for_stats_json_from<R: Read>(reader: &mut R, max_wait: Duration) -> 
         }
     }
     for l in buf.lines().rev() {
-        if l.starts_with('{') && l.ends_with('}') {
-            if let Ok(json) = serde_json::from_str::<Json>(l) {
+        let line = strip_log_prefix(l);
+        if line.starts_with('{') && line.ends_with('}') {
+            if let Ok(json) = serde_json::from_str::<Json>(line) {
                 return Some(json);
             }
         }

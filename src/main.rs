@@ -1,3 +1,5 @@
+#[macro_use]
+mod logging;
 mod cli;
 mod net;
 mod stats;
@@ -87,7 +89,7 @@ fn run_client_to_upstream_thread(
                     if e.kind() == io::ErrorKind::WouldBlock
                         || e.kind() == io::ErrorKind::TimedOut => {}
                 Err(e) => {
-                    eprintln!("recv client (connected) error: {}", e);
+                    log_error!("recv client (connected) error: {}", e);
                     thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -96,7 +98,7 @@ fn run_client_to_upstream_thread(
                 Ok((len, src_sa)) => {
                     let t_recv = Instant::now();
                     let Some(src) = src_sa.as_socket() else {
-                        eprintln!(
+                        log_warn!(
                             "recv_from client non-IP address family (ignored): {:?}",
                             src_sa
                         );
@@ -106,13 +108,13 @@ fn run_client_to_upstream_thread(
                     if !locked.load(AtomOrdering::Relaxed) {
                         local_unconnected_client = Some(src);
                         if cfg.debug_no_connect {
-                            println!("Locked to single client {} (not connected)", src);
+                            log_info!("Locked to single client {} (not connected)", src);
                         } else if let Err(e) = client_sock.connect(&src_sa) {
-                            eprintln!("connect client_sock to {} failed: {}", src, e);
-                            println!("Locked to single client {} (not connected)", src);
+                            log_error!("connect client_sock to {} failed: {}", src, e);
+                            log_info!("Locked to single client {} (not connected)", src);
                         } else {
                             local_unconnected_client = None;
-                            println!("Locked to single client {} (connected)", src);
+                            log_info!("Locked to single client {} (connected)", src);
                         }
                         *client_peer_connected.lock().unwrap() =
                             Some((src, local_unconnected_client.is_none()));
@@ -154,7 +156,7 @@ fn run_client_to_upstream_thread(
                     if e.kind() == io::ErrorKind::WouldBlock
                         || e.kind() == io::ErrorKind::TimedOut => {}
                 Err(e) => {
-                    eprintln!("recv_from client error: {}", e);
+                    log_error!("recv_from client error: {}", e);
                     thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -246,7 +248,7 @@ fn run_upstream_to_client_thread(
                 }
             }
             Err(e) => {
-                eprintln!("recv upstream (connected) error: {}", e);
+                log_error!("recv upstream (connected) error: {}", e);
                 thread::sleep(Duration::from_millis(10));
             }
         }
@@ -280,13 +282,13 @@ fn run_watchdog_thread(
                             .as_ref()
                             .map(|(_, connected)| *connected)
                             .unwrap_or(false);
-                        eprintln!(
+                        log_warn!(
                             "Idle timeout reached ({}s): dropping locked client; waiting for a new client",
                             cfg.timeout_secs
                         );
                         if was_connected {
                             if let Err(e) = udp_disconnect(&client_sock) {
-                                eprintln!("udp disconnect failed: {}", e);
+                                log_error!("udp disconnect failed: {}", e);
                                 exit_code_set.store((1 << 31) | 1, AtomOrdering::Relaxed);
                                 return;
                             }
@@ -296,7 +298,7 @@ fn run_watchdog_thread(
                         last_seen_ns.store(0, AtomOrdering::Relaxed);
                     }
                     _ => {
-                        eprintln!(
+                        log_warn!(
                             "Idle timeout reached ({}s): exiting cleanly",
                             cfg.timeout_secs
                         );
@@ -311,15 +313,19 @@ fn run_watchdog_thread(
 
 fn print_startup(local_bind: SocketAddr, upstream_mgr: &UpstreamManager, cfg: &Config) {
     let (upstream_addr, upstream_proto) = { upstream_mgr.current_dest() };
-    println!(
-        "Listening on {}:{}, forwarding to upstream {}:{}. Waiting for first client...",
-        cfg.listen_proto, local_bind, upstream_proto, upstream_addr
+    log_info!(
+        "Listening on {}:{}, forwarding to upstream {}:{}; waiting for first client",
+        cfg.listen_proto,
+        local_bind,
+        upstream_proto,
+        upstream_addr
     );
-    println!(
+    log_info!(
         "Timeout: {}s, on-timeout: {:?}",
-        cfg.timeout_secs, cfg.on_timeout
+        cfg.timeout_secs,
+        cfg.on_timeout
     );
-    println!("Re-resolve every: {}s (0=disabled)", cfg.reresolve_secs);
+    log_info!("Re-resolve every: {}s (0=disabled)", cfg.reresolve_secs);
 }
 
 fn main() -> io::Result<()> {
@@ -472,9 +478,7 @@ fn drop_privileges(cfg: &Config) -> io::Result<()> {
     if !unistd::geteuid().is_root() {
         // Not root: ignore any requested run-as flags.
         if cfg.run_as_user.is_some() || cfg.run_as_group.is_some() {
-            eprintln!(
-                "Warning: --user/--group specified but process is not running as root; ignoring"
-            );
+            log_warn!("--user/--group specified but process is not running as root; ignoring");
         }
         return Ok(());
     }
@@ -535,7 +539,7 @@ fn drop_privileges(cfg: &Config) -> io::Result<()> {
     unistd::setuid(uid)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("setuid failed: {e}")))?;
 
-    println!(
+    log_info!(
         "Dropped privileges to user '{}' (uid={}, gid={})",
         user.name,
         uid.as_raw(),

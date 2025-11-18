@@ -62,7 +62,7 @@ pub fn parse_args() -> Config {
     // One place for usage. Program name is filled dynamically.
     fn print_usage_and_exit(code: i32) -> ! {
         let prog = env::args().next().unwrap_or_else(|| "pkthere".into());
-        eprintln!(
+        log_error!(
             "Usage: {prog} --here <protocol:listen_ip:port_id> --there <protocol:upstream_host_or_ip:port_id>\n\
              \n\
              Options:\n\
@@ -82,7 +82,7 @@ pub fn parse_args() -> Config {
     // DRY helper: set an Option<T> once; error if the flag was already provided
     fn set_once<T>(slot: &mut Option<T>, val: T, flag: &str) {
         if slot.is_some() {
-            eprintln!("{flag} specified multiple times");
+            log_error!("{flag} specified multiple times");
             print_usage_and_exit(2)
         }
         *slot = Some(val);
@@ -93,7 +93,7 @@ pub fn parse_args() -> Config {
         s.split_once(':')
             .and_then(|(proto_str, rest)| SupportedProtocol::from_str(proto_str).map(|p| (p, rest)))
             .unwrap_or_else(|| {
-                eprintln!("{flag} must be UDP:<ip>:<port> or ICMP:<ip>:<id> (got '{s}')");
+                log_error!("{flag} must be UDP:<ip>:<port> or ICMP:<ip>:<id> (got '{s}')");
                 print_usage_and_exit(2)
             })
     }
@@ -105,7 +105,7 @@ pub fn parse_args() -> Config {
         <T as std::str::FromStr>::Err: std::fmt::Display,
     {
         s.parse::<T>().unwrap_or_else(|e| {
-            eprintln!("invalid {flag}: {e}");
+            log_error!("invalid {flag}: {e}");
             print_usage_and_exit(2)
         })
     }
@@ -116,7 +116,7 @@ pub fn parse_args() -> Config {
         match resolve_first(addr_str) {
             Ok(sa) => (sa, sa.port(), proto),
             Err(e) => {
-                eprintln!(
+                log_error!(
                     "--here: failed to parse and resolve host:port or ip:port (got '{s}'): {e}"
                 );
                 print_usage_and_exit(2)
@@ -128,7 +128,7 @@ pub fn parse_args() -> Config {
         match resolve_first(addr_str) {
             Ok(sa) => (sa.to_string(), sa.port(), proto),
             Err(e) => {
-                eprintln!(
+                log_error!(
                     "--there: failed to parse and resolve host:port or ip:port (got '{s}'): {e}"
                 );
                 print_usage_and_exit(2)
@@ -142,7 +142,7 @@ pub fn parse_args() -> Config {
         flag: &str,
     ) -> String {
         it.next().unwrap_or_else(|| {
-            eprintln!("{flag} requires a value");
+            log_error!("{flag} requires a value");
             print_usage_and_exit(2)
         })
     }
@@ -190,7 +190,7 @@ pub fn parse_args() -> Config {
                     "drop" => TimeoutAction::Drop,
                     "exit" => TimeoutAction::Exit,
                     _ => {
-                        eprintln!("--on-timeout must be drop|exit");
+                        log_error!("--on-timeout must be drop|exit");
                         print_usage_and_exit(2)
                     }
                 };
@@ -232,7 +232,7 @@ pub fn parse_args() -> Config {
                         "no-connect" => debug_no_connect = true,
                         "log-drops" => debug_log_drops = true,
                         _ => {
-                            eprintln!("--debug expects no-connect or log-drops (got '{flag}')");
+                            log_error!("--debug expects no-connect or log-drops (got '{flag}')");
                             print_usage_and_exit(2)
                         }
                     }
@@ -240,7 +240,7 @@ pub fn parse_args() -> Config {
             }
             "-h" | "--help" => print_usage_and_exit(0),
             other => {
-                eprintln!("unknown arg: {other}");
+                log_error!("unknown arg: {other}");
                 print_usage_and_exit(2)
             }
         }
@@ -249,14 +249,14 @@ pub fn parse_args() -> Config {
     let (listen_addr, listen_port_id, listen_proto) = match listen_opt {
         Some(t) => t,
         None => {
-            eprintln!("missing required flag: --here <protocol:listen_ip:port>");
+            log_error!("missing required flag: --here <protocol:listen_ip:port>");
             print_usage_and_exit(2)
         }
     };
     let (upstream_addr, _upstream_port_id, upstream_proto) = match upstream_opt {
         Some(t) => t,
         None => {
-            eprintln!("missing required flag: --there <protocol:upstream_host_or_ip:port>");
+            log_error!("missing required flag: --there <protocol:upstream_host_or_ip:port>");
             print_usage_and_exit(2)
         }
     };
