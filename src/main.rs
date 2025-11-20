@@ -21,6 +21,22 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[inline]
+fn handle_udp_disconnect(sock: &Socket, context: &str, exit_code_set: Option<&AtomicU32>) -> bool {
+    match udp_disconnect(sock) {
+        Ok(_) => true,
+        Err(e) => {
+            if let Some(exit) = exit_code_set {
+                log_error!("{context}: udp disconnect failed: {}", e);
+                exit.store((1 << 31) | 1, AtomOrdering::Relaxed);
+            } else {
+                log_warn!("{context}: udp disconnect failed: {}", e);
+            }
+            false
+        }
+    }
+}
+
+#[inline]
 fn as_uninit_mut(buf: &mut [u8]) -> &mut [std::mem::MaybeUninit<u8>] {
     // Safety: socket2::Socket::recv/recv_from promise not to write uninitialised bytes past what they return.
     unsafe {
@@ -195,9 +211,9 @@ fn run_upstream_to_client_thread(
                 if !locked.load(AtomOrdering::Relaxed) {
                     local_dest = None;
                 } else if let Some((dest, dest_sa, dest_port_id, dest_connected)) =
-                    local_dest.as_ref()
+                    local_dest.as_mut()
                 {
-                    send_payload(
+                    if !send_payload(
                         false,
                         t_start,
                         t_recv,
@@ -213,13 +229,19 @@ fn run_upstream_to_client_thread(
                         *dest_port_id,
                         up_sock_port_id,
                         cfg.debug_log_drops,
-                    );
+                    ) {
+                        if *dest_connected {
+                            handle_udp_disconnect(client_sock, "dest-addr-required", None);
+                        }
+                        *dest_connected = false;
+                        *client_peer_connected.lock().unwrap() = Some((*dest, false));
+                    }
                 } else if let Some((dest, connected)) = *client_peer_connected.lock().unwrap() {
                     let dest_sa = SockAddr::from(dest);
                     let dest_port_id = dest.port();
-                    let dest_connected = connected;
+                    let mut dest_connected = connected;
 
-                    send_payload(
+                    if !send_payload(
                         false,
                         t_start,
                         t_recv,
@@ -235,7 +257,13 @@ fn run_upstream_to_client_thread(
                         dest_port_id,
                         up_sock_port_id,
                         cfg.debug_log_drops,
-                    );
+                    ) {
+                        if dest_connected {
+                            handle_udp_disconnect(client_sock, "dest-addr-required", None);
+                        }
+                        dest_connected = false;
+                        *client_peer_connected.lock().unwrap() = Some((dest, false));
+                    }
 
                     local_dest = Some((dest, dest_sa, dest_port_id, dest_connected));
                 }
@@ -287,9 +315,8 @@ fn run_watchdog_thread(
                             cfg.timeout_secs
                         );
                         if was_connected {
-                            if let Err(e) = udp_disconnect(&client_sock) {
-                                log_error!("udp disconnect failed: {}", e);
-                                exit_code_set.store((1 << 31) | 1, AtomOrdering::Relaxed);
+                            if !handle_udp_disconnect(&client_sock, "watchdog", Some(exit_code_set))
+                            {
                                 return;
                             }
                         }
