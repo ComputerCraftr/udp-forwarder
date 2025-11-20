@@ -106,6 +106,7 @@ fn run_client_to_upstream_thread(
                         || e.kind() == io::ErrorKind::TimedOut => {}
                 Err(e) => {
                     log_error!("recv client (connected) error: {}", e);
+                    stats.drop_err(true);
                     thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -173,6 +174,7 @@ fn run_client_to_upstream_thread(
                         || e.kind() == io::ErrorKind::TimedOut => {}
                 Err(e) => {
                     log_error!("recv_from client error: {}", e);
+                    stats.drop_err(true);
                     thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -277,6 +279,7 @@ fn run_upstream_to_client_thread(
             }
             Err(e) => {
                 log_error!("recv upstream (connected) error: {}", e);
+                stats.drop_err(false);
                 thread::sleep(Duration::from_millis(10));
             }
         }
