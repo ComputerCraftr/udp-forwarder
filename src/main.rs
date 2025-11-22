@@ -362,6 +362,12 @@ fn main() -> io::Result<()> {
     let t_start = Instant::now();
     let mut user_requested_cfg = parse_args();
 
+    // FreeBSD UDP disconnect is unreliable; keep sockets unconnected so we can relock.
+    #[cfg(target_os = "freebsd")]
+    {
+        user_requested_cfg.debug_no_connect = true;
+    }
+
     // Listener for the local client (this may require root for low ports)
     let (client_sock_raw, actual_listen) = make_socket(
         user_requested_cfg.listen_addr,

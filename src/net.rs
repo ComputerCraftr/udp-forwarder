@@ -231,11 +231,6 @@ pub fn send_payload(
 fn is_dest_addr_required(res: &io::Result<usize>) -> bool {
     matches!(res, Err(e) if e.raw_os_error() == Some(DEST_ADDR_REQUIRED))
 }
-/*
-fn is_dest_addr_required(err: &io::Error) -> bool {
-    err.raw_os_error() == Some(DEST_ADDR_REQUIRED)
-}
-*/
 
 /// Some OSes (notably Linux for IPv4 raw sockets) deliver the full IP header
 /// followed by the ICMP message. Others deliver only the ICMP message.
