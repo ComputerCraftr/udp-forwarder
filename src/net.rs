@@ -589,26 +589,9 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
     let mut pairs = if n < 128 {
         // Small/latency path: tight 2-byte pairs loop; no arrays, no extra branches.
         data.chunks_exact(2)
-    } else if n < 256 {
-        // Mid-size: 16-byte unroll (8 words per iter)
-        let mut chunks16 = data.chunks_exact(16);
-        for c in &mut chunks16 {
-            sum = sum
-                .wrapping_add(be16_32(c[0], c[1]))
-                .wrapping_add(be16_32(c[2], c[3]))
-                .wrapping_add(be16_32(c[4], c[5]))
-                .wrapping_add(be16_32(c[6], c[7]))
-                .wrapping_add(be16_32(c[8], c[9]))
-                .wrapping_add(be16_32(c[10], c[11]))
-                .wrapping_add(be16_32(c[12], c[13]))
-                .wrapping_add(be16_32(c[14], c[15]));
-        }
-        let rem = chunks16.remainder();
-        rem.chunks_exact(2)
     } else {
-        // Throughput path for larger payloads.
-        // Use a 32-byte unroll when really large (reduces loop/branch overhead),
-        // else keep the 16-byte unroll to limit code size/pressure.
+        // Throughput path for medium+ payloads: always use the 32-byte unroll to
+        // cut loop/branch overhead and keep the code size minimal.
         let mut chunks32 = data.chunks_exact(32); // 16 words per iter
         for c in &mut chunks32 {
             sum = sum
