@@ -66,7 +66,7 @@ fn run_client_to_upstream_thread(
     let mut upstream_sock_type = handles.upstream_sock.r#type().unwrap_or(Type::RAW);
     loop {
         // Cheap hot-path check: only refresh when manager version changes
-        if handles.version != sock_mgr.version() {
+        if handles.version != sock_mgr.get_version() {
             handles = sock_mgr.refresh_handles();
             dest_sa = SockAddr::from(handles.upstream_addr);
             dest_port_id = handles.upstream_addr.port();
@@ -132,7 +132,7 @@ fn run_client_to_upstream_thread(
                         }
 
                         // Once locked, connect client socket to the peer and switch to recv()
-                        handles.version = sock_mgr.set_client_connected(
+                        handles.version = sock_mgr.set_client_addr_connected(
                             Some(src),
                             handles.client_connected,
                             handles.version,
@@ -140,7 +140,7 @@ fn run_client_to_upstream_thread(
                         locked.store(true, AtomOrdering::Relaxed);
 
                         if let Ok(new_handles) =
-                            sock_mgr.apply_fresh(&cfg.upstream_addr, "Re-resolved")
+                            sock_mgr.reresolve(false, "Re-resolved").map(|(h, _)| h)
                         {
                             handles = new_handles;
                             dest_sa = SockAddr::from(handles.upstream_addr);
@@ -226,7 +226,7 @@ fn run_upstream_to_client_thread(
                 let t_recv = Instant::now();
 
                 // Cheap hot-path check: refresh local handles only when version changes
-                if handles.version != sock_mgr.version() {
+                if handles.version != sock_mgr.get_version() {
                     handles = sock_mgr.refresh_handles();
                     upstream_sock_port_id = handles.upstream_addr.port();
                     (dest_sa, dest_port_id) = if let Some(addr) = handles.client_addr {
@@ -257,7 +257,7 @@ fn run_upstream_to_client_thread(
                     {
                         handle_udp_disconnect(&handles.client_sock, "dest-addr-required", None);
                         handles.client_connected = false;
-                        handles.version = sock_mgr.set_client_connected(
+                        handles.version = sock_mgr.set_client_addr_connected(
                             handles.client_addr,
                             false,
                             handles.version,
@@ -308,7 +308,7 @@ fn run_watchdog_thread(
                             {
                                 return;
                             }
-                            sock_mgr.set_client_connected(None, false, 0);
+                            sock_mgr.set_client_addr_connected(None, false, 0);
                         }
                         locked.store(false, AtomOrdering::Relaxed);
                         last_seen_ns.store(0, AtomOrdering::Relaxed);
@@ -327,13 +327,13 @@ fn run_watchdog_thread(
     }
 }
 
-fn print_startup(local_bind: SocketAddr, cfg: &Config, sock_mgr: &SocketManager) {
-    let (_, _, client_proto) = { sock_mgr.client_dest() };
-    let (upstream_addr, _, upstream_proto) = { sock_mgr.upstream_dest() };
+fn print_startup(cfg: &Config, sock_mgr: &SocketManager) {
+    let (_, _, client_proto) = { sock_mgr.get_client_dest() };
+    let (upstream_addr, _, upstream_proto) = { sock_mgr.get_upstream_dest() };
     log_info!(
         "Listening on {}:{}, forwarding to upstream {}:{}; waiting for first client",
         client_proto,
-        local_bind,
+        sock_mgr.get_listen_addr(),
         upstream_proto,
         upstream_addr
     );
@@ -356,23 +356,25 @@ fn main() -> io::Result<()> {
     }
 
     // Listener for the local client (this may require root for low ports)
-    let (client_sock, actual_listen) = make_socket(
+    let (client_sock, actual_listen_addr) = make_socket(
         user_requested_cfg.listen_addr,
         user_requested_cfg.listen_proto,
         1000,
         false,
         user_requested_cfg.listen_proto == SupportedProtocol::ICMP,
     )?;
-    user_requested_cfg.listen_addr = actual_listen;
-    user_requested_cfg.listen_port_id = actual_listen.port();
+    user_requested_cfg.listen_addr = actual_listen_addr;
+    user_requested_cfg.listen_port_id = actual_listen_addr.port();
 
     let cfg = Arc::new(user_requested_cfg);
 
     // Initial upstream resolution + socket manager
     let sock_mgr = Arc::new(SocketManager::new(
         client_sock,
+        cfg.listen_addr,
+        cfg.listen_str.clone(),
         cfg.listen_proto,
-        &cfg.upstream_addr,
+        cfg.upstream_str.clone(),
         cfg.upstream_proto,
     )?);
 
@@ -405,7 +407,7 @@ fn main() -> io::Result<()> {
         })?;
     }
 
-    print_startup(cfg.listen_addr, &cfg, &sock_mgr);
+    print_startup(&cfg, &sock_mgr);
 
     // Client -> Upstream
     {
@@ -468,7 +470,7 @@ fn main() -> io::Result<()> {
     }
 
     // Optional periodic re-resolve
-    sock_mgr.spawn_periodic(Arc::clone(&cfg), Arc::clone(&locked));
+    sock_mgr.spawn_periodic(cfg.reresolve_secs, true);
 
     // Stats thread
     stats.spawn_stats_printer(

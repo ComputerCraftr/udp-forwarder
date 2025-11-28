@@ -1,5 +1,5 @@
-use crate::cli::{Config, SupportedProtocol};
-use crate::net::{family_changed, make_upstream_socket_for, resolve_first};
+use crate::cli::SupportedProtocol;
+use crate::net::{family_changed, make_socket, make_upstream_socket_for, resolve_first};
 use socket2::{SockAddr, Socket};
 
 use std::io;
@@ -24,8 +24,11 @@ pub struct SocketHandles {
 pub struct SocketManager {
     client_addr: Mutex<Option<SocketAddr>>, // cold-path updates only
     client_connected: Mutex<bool>,
-    client_proto: SupportedProtocol,   // never changes
     client_sock: Mutex<Socket>,        // shared listener socket
+    listen_addr: Mutex<SocketAddr>,    // current bound address
+    listen_target: String,             // unresolved --here host:port
+    listen_proto: SupportedProtocol,   // never changes
+    upstream_target: String,           // unresolved --there host:port
     upstream_addr: Mutex<SocketAddr>,  // cold-path updates only
     upstream_connected: bool,          // connected at creation
     upstream_proto: SupportedProtocol, // never changes
@@ -37,17 +40,22 @@ pub struct SocketManager {
 impl SocketManager {
     pub fn new(
         client_sock: Socket,
-        client_proto: SupportedProtocol,
-        upstream_target: &str,
+        listen_addr: SocketAddr,
+        listen_target: String,
+        listen_proto: SupportedProtocol,
+        upstream_target: String,
         upstream_proto: SupportedProtocol,
     ) -> io::Result<Self> {
-        let dest = resolve_first(upstream_target)?;
+        let dest = resolve_first(&upstream_target)?;
         let (sock, _actual_dest) = make_upstream_socket_for(dest, upstream_proto)?;
         Ok(Self {
             client_addr: Mutex::new(None),
             client_connected: Mutex::new(false),
-            client_proto,
             client_sock: Mutex::new(client_sock),
+            listen_addr: Mutex::new(listen_addr),
+            listen_target,
+            listen_proto,
+            upstream_target,
             upstream_addr: Mutex::new(dest),
             upstream_connected: true,
             upstream_proto,
@@ -57,13 +65,19 @@ impl SocketManager {
         })
     }
 
+    /// Current version for lock-free checks in hot paths.
+    #[inline]
+    pub fn get_version(&self) -> u64 {
+        self.version.load(AtomOrdering::Relaxed)
+    }
+
     #[inline]
     pub fn get_client_connected(&self) -> bool {
         *self.client_connected.lock().unwrap()
     }
 
     #[inline]
-    pub fn set_client_connected(
+    pub fn set_client_addr_connected(
         &self,
         addr: Option<SocketAddr>,
         connected: bool,
@@ -75,17 +89,23 @@ impl SocketManager {
         prev_ver + 1
     }
 
+    /// Current listen bind address.
     #[inline]
-    pub fn client_dest(&self) -> (Option<SocketAddr>, bool, SupportedProtocol) {
+    pub fn get_listen_addr(&self) -> SocketAddr {
+        *self.listen_addr.lock().unwrap()
+    }
+
+    #[inline]
+    pub fn get_client_dest(&self) -> (Option<SocketAddr>, bool, SupportedProtocol) {
         (
             *self.client_addr.lock().unwrap(),
             *self.client_connected.lock().unwrap(),
-            self.client_proto,
+            self.listen_proto,
         )
     }
 
     #[inline]
-    pub fn upstream_dest(&self) -> (SocketAddr, bool, SupportedProtocol) {
+    pub fn get_upstream_dest(&self) -> (SocketAddr, bool, SupportedProtocol) {
         (
             *self.upstream_addr.lock().unwrap(),
             self.upstream_connected,
@@ -93,9 +113,8 @@ impl SocketManager {
         )
     }
 
-    /// Re-resolve a target string and update: swap socket if family flips.
-    pub fn apply_fresh(&self, target: &str, context: &str) -> io::Result<SocketHandles> {
-        let fresh = resolve_first(target)?;
+    fn reresolve_upstream(&self, context: &str) -> io::Result<(Socket, SocketAddr, bool)> {
+        let fresh = resolve_first(&self.upstream_target)?;
 
         // Compare against previous before updating to compute correct family flip
         let (fam_flip, changed) = {
@@ -134,28 +153,97 @@ impl SocketManager {
             self.upstream_sock.lock().unwrap().try_clone()?
         };
 
-        let ver = if fam_flip || changed {
-            // publish that upstream changed; readers can refresh lazily
+        Ok((ret_sock, fresh, fam_flip || changed))
+    }
+
+    fn reresolve_listen(&self, context: &str) -> io::Result<(Socket, SocketAddr, bool)> {
+        let fresh = resolve_first(&self.listen_target)?;
+
+        let (fam_flip, changed) = {
+            let mut cur = self.listen_addr.lock().unwrap();
+            let prev = *cur;
+            let changed = prev.ip() != fresh.ip();
+            let fam_flip = if changed {
+                *cur = fresh;
+                family_changed(prev, fresh)
+            } else {
+                false
+            };
+            (fam_flip, changed)
+        };
+
+        let ret_sock = if fam_flip || changed {
+            log_info!("{context}: listen {fresh} (listener swapped)");
+            let (new_sock, actual_bind) = make_socket(
+                fresh,
+                self.listen_proto,
+                1000,
+                false,
+                self.listen_proto == SupportedProtocol::ICMP,
+            )?;
+            {
+                *self.client_addr.lock().unwrap() = None;
+                *self.client_connected.lock().unwrap() = false;
+                *self.client_sock.lock().unwrap() = new_sock.try_clone()?;
+                *self.listen_addr.lock().unwrap() = actual_bind;
+            }
+            new_sock
+        } else {
+            self.clone_client_socket()
+        };
+
+        Ok((
+            ret_sock,
+            *self.listen_addr.lock().unwrap(),
+            fam_flip || changed,
+        ))
+    }
+
+    /// Re-resolve both ends and publish any changes. When `allow_listen_rebind`
+    /// is true, the listening socket may be swapped if the --here DNS changes.
+    /// Returns handles and a flag indicating whether the listener changed.
+    pub fn reresolve(
+        &self,
+        allow_listen_rebind: bool,
+        context: &str,
+    ) -> io::Result<(SocketHandles, bool)> {
+        let (up_sock, up_addr, up_changed) = self.reresolve_upstream(context)?;
+
+        let (client_sock, _listen_addr, listen_changed) = if allow_listen_rebind {
+            let res = self.reresolve_listen(context)?;
+            (res.0, Some(res.1), res.2)
+        } else {
+            (self.clone_client_socket(), None, false)
+        };
+
+        let changed_any = up_changed || listen_changed;
+        let ver = if changed_any {
             self.version.fetch_add(1, AtomOrdering::Relaxed) + 1
         } else {
             self.version.load(AtomOrdering::Relaxed)
         };
 
-        // Return up-to-date handles to the caller without re-locking other getters
-        Ok(SocketHandles {
-            client_addr: *self.client_addr.lock().unwrap(),
-            client_connected: *self.client_connected.lock().unwrap(),
-            client_sock: self.clone_client_socket(),
-            upstream_addr: fresh,
-            upstream_connected: self.upstream_connected,
-            upstream_sock: ret_sock,
-            version: ver,
-        })
+        Ok((
+            SocketHandles {
+                client_addr: *self.client_addr.lock().unwrap(),
+                client_connected: *self.client_connected.lock().unwrap(),
+                client_sock,
+                upstream_addr: up_addr,
+                upstream_connected: self.upstream_connected,
+                upstream_sock: up_sock,
+                version: ver,
+            },
+            listen_changed,
+        ))
     }
 
     /// Optional periodic re-resolve while locked.
-    pub fn spawn_periodic(self: &Arc<Self>, cfg: Arc<Config>, locked: Arc<AtomicBool>) -> bool {
-        if cfg.reresolve_secs == 0 {
+    pub fn spawn_periodic(
+        self: &Arc<Self>,
+        reresolve_secs: u64,
+        allow_listen_rebind: bool,
+    ) -> bool {
+        if reresolve_secs == 0 {
             return false;
         }
         // Single-init gate like stats thread: only allow one periodic worker.
@@ -168,22 +256,13 @@ impl SocketManager {
         }
         let mgr = Arc::clone(self);
         thread::spawn(move || {
-            let period = Duration::from_secs(cfg.reresolve_secs);
+            let period = Duration::from_secs(reresolve_secs);
             loop {
                 thread::sleep(period);
-                if !locked.load(AtomOrdering::Relaxed) {
-                    continue;
-                }
-                let _ = mgr.apply_fresh(&cfg.upstream_addr, "Periodic re-resolve");
+                let _ = mgr.reresolve(allow_listen_rebind, "Periodic re-resolve");
             }
         });
         true
-    }
-
-    /// Current version for lock-free checks in hot paths.
-    #[inline]
-    pub fn version(&self) -> u64 {
-        self.version.load(AtomOrdering::Relaxed)
     }
 
     /// Clone sockets and destination (cold path under mutexes).
@@ -194,10 +273,10 @@ impl SocketManager {
             client_addr: *self.client_addr.lock().unwrap(),
             client_connected: *self.client_connected.lock().unwrap(),
             client_sock: self.clone_client_socket(),
-            upstream_addr: self.upstream_dest().0,
+            upstream_addr: self.get_upstream_dest().0,
             upstream_connected: self.upstream_connected,
             upstream_sock: self.clone_upstream_socket(),
-            version: self.version(),
+            version: self.get_version(),
         }
     }
 

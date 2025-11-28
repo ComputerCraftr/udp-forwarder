@@ -43,8 +43,9 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     pub listen_port_id: u16,             // Cached UDP port or ICMP identifier
     pub listen_proto: SupportedProtocol, // UDP | ICMP
-    pub upstream_addr: String,           // FQDN:port or IP:port
+    pub listen_str: String,              // original --here host:port string
     pub upstream_proto: SupportedProtocol, // UDP | ICMP
+    pub upstream_str: String,            // FQDN:port or IP:port
     pub timeout_secs: u64,               // idle timeout for single client
     pub on_timeout: TimeoutAction,       // Drop | Exit
     pub stats_interval_mins: u32,        // JSON stats print interval
@@ -111,10 +112,10 @@ pub fn parse_args() -> Config {
     }
 
     // Address helpers.
-    fn parse_here(s: &str) -> (SocketAddr, u16, SupportedProtocol) {
+    fn parse_here(s: &str) -> (String, SocketAddr, u16, SupportedProtocol) {
         let (proto, addr_str) = split_proto(s, "--here");
         match resolve_first(addr_str) {
-            Ok(sa) => (sa, sa.port(), proto),
+            Ok(sa) => (sa.to_string(), sa, sa.port(), proto),
             Err(e) => {
                 log_error!(
                     "--here: failed to parse and resolve host:port or ip:port (got '{s}'): {e}"
@@ -148,7 +149,7 @@ pub fn parse_args() -> Config {
     }
 
     // Required
-    let mut listen_opt: Option<(SocketAddr, u16, SupportedProtocol)> = None;
+    let mut listen_opt: Option<(String, SocketAddr, u16, SupportedProtocol)> = None;
     let mut upstream_opt: Option<(String, u16, SupportedProtocol)> = None;
 
     // Optional (track presence to reject duplicates cleanly)
@@ -246,14 +247,14 @@ pub fn parse_args() -> Config {
         }
     }
 
-    let (listen_addr, listen_port_id, listen_proto) = match listen_opt {
+    let (listen_str, listen_addr, listen_port_id, listen_proto) = match listen_opt {
         Some(t) => t,
         None => {
             log_error!("missing required flag: --here <protocol:listen_ip:port>");
             print_usage_and_exit(2)
         }
     };
-    let (upstream_addr, _upstream_port_id, upstream_proto) = match upstream_opt {
+    let (upstream_str, _upstream_port_id, upstream_proto) = match upstream_opt {
         Some(t) => t,
         None => {
             log_error!("missing required flag: --there <protocol:upstream_host_or_ip:port>");
@@ -272,8 +273,9 @@ pub fn parse_args() -> Config {
         listen_addr,
         listen_port_id,
         listen_proto,
-        upstream_addr,
+        listen_str,
         upstream_proto,
+        upstream_str,
         timeout_secs,
         on_timeout,
         stats_interval_mins,
