@@ -138,12 +138,12 @@ pub fn send_payload(
     };
 
     // If the source side was ICMP, strip the 8-byte Echo header before forwarding.
-    let (icmp_success, payload, src_ident, src_seq_opt, src_is_req) = match src_proto {
+    let (icmp_proto, icmp_success, payload, src_ident, src_seq, src_is_req) = match src_proto {
         SupportedProtocol::ICMP => {
             let res = parse_icmp_echo_header(buf);
-            (res.0, res.1, res.2, Some(res.3), res.4)
+            (true, res.0, res.1, res.2, res.3, res.4)
         }
-        _ => (true, buf, recv_port_id, None, c2u),
+        _ => (false, true, buf, recv_port_id, 0u16, c2u),
     };
 
     // Size check on the normalized payload.
@@ -176,7 +176,7 @@ pub fn send_payload(
     }
 
     // Update ICMP reply sequence when we receive a request
-    if let Some(src_seq) = src_seq_opt {
+    if icmp_proto && c2u {
         REPLY_ICMP_SEQ.store(src_seq, AtomOrdering::Relaxed);
     }
 
