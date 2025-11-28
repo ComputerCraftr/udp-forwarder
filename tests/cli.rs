@@ -155,6 +155,30 @@ fn rejects_invalid_numeric_values() {
 }
 
 #[test]
+fn rejects_invalid_reresolve_mode() {
+    let (code, err) = run_cli_args(&[
+        "--here",
+        "UDP:127.0.0.1:1",
+        "--there",
+        "UDP:127.0.0.1:53",
+        "--reresolve-mode",
+        "invalid",
+    ]);
+    assert_eq!(
+        code,
+        Some(2),
+        "expected exit code 2, got {:?}; stderr: {}",
+        code,
+        err
+    );
+    assert!(
+        err.contains("--reresolve-mode") && err.contains("upstream"),
+        "stderr: {}",
+        err
+    );
+}
+
+#[test]
 fn rejects_invalid_here_value() {
     let (code, err) = run_cli_args(&["--here", "XYZ:127.0.0.1:abc", "--there", "UDP:127.0.0.1:53"]);
     assert_eq!(
@@ -226,6 +250,32 @@ fn rejects_duplicate_user_flags() {
     );
     assert!(
         err.contains("--user specified multiple times"),
+        "stderr: {}",
+        err
+    );
+}
+
+#[test]
+fn rejects_duplicate_reresolve_mode() {
+    let (code, err) = run_cli_args(&[
+        "--here",
+        "UDP:127.0.0.1:1",
+        "--there",
+        "UDP:127.0.0.1:2",
+        "--reresolve-mode",
+        "upstream",
+        "--reresolve-mode",
+        "both",
+    ]);
+    assert_eq!(
+        code,
+        Some(2),
+        "expected exit code 2, got {:?}; stderr: {}",
+        code,
+        err
+    );
+    assert!(
+        err.contains("--reresolve-mode specified multiple times"),
         "stderr: {}",
         err
     );

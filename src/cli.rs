@@ -38,6 +38,36 @@ pub enum TimeoutAction {
     Exit,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReresolveMode {
+    None,
+    Upstream,
+    Listen,
+    Both,
+}
+
+impl ReresolveMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Some(ReresolveMode::None),
+            "upstream" => Some(ReresolveMode::Upstream),
+            "listen" => Some(ReresolveMode::Listen),
+            "both" => Some(ReresolveMode::Both),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn allow_upstream(self) -> bool {
+        matches!(self, ReresolveMode::Upstream | ReresolveMode::Both)
+    }
+
+    #[inline]
+    pub fn allow_listen(self) -> bool {
+        matches!(self, ReresolveMode::Listen | ReresolveMode::Both)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub listen_addr: SocketAddr,
@@ -51,6 +81,7 @@ pub struct Config {
     pub stats_interval_mins: u32,        // JSON stats print interval
     pub max_payload: usize,              // optional user-specified MTU/payload limit
     pub reresolve_secs: u64,             // 0 = disabled
+    pub reresolve_mode: ReresolveMode,   // which side(s) to re-resolve
     #[cfg(unix)]
     pub run_as_user: Option<String>,
     #[cfg(unix)]
@@ -71,7 +102,8 @@ pub fn parse_args() -> Config {
              \t--on-timeout drop|exit   What to do on timeout (default: drop)\n\
              \t--stats-interval-mins N  JSON stats print interval minutes (default: 60)\n\
              \t--max-payload N          Payload limit (0=unlimited)\n\
-             \t--reresolve-secs N       Re-resolve upstream host every N seconds (0=disabled)\n\
+             \t--reresolve-secs N       Re-resolve host(s) every N seconds (0=disabled)\n\
+             \t--reresolve-mode WHAT    Which sockets to re-resolve: upstream|listen|both|none (default: upstream)\n\
              \t--user NAME              Drop privileges to this user (Unix only)\n\
              \t--group NAME             Drop privileges to this group (Unix only)\n\
              \t--debug WHAT             Enable debug behavior (repeatable); WHAT = no-connect|log-drops\n\
@@ -158,6 +190,7 @@ pub fn parse_args() -> Config {
     let mut stats_interval_mins: Option<u32> = None;
     let mut max_payload: Option<usize> = None; // unlimited if None
     let mut reresolve_secs: Option<u64> = None; // 0 if None
+    let mut reresolve_mode: Option<ReresolveMode> = None; // default upstream
 
     #[cfg(unix)]
     let mut run_as_user: Option<String> = None;
@@ -211,6 +244,14 @@ pub fn parse_args() -> Config {
                 let val = get_next_value(&mut args_iter, "--reresolve-secs");
                 let parsed = parse_num::<u64>(&val, "--reresolve-secs");
                 set_once(&mut reresolve_secs, parsed, "--reresolve-secs");
+            }
+            "--reresolve-mode" => {
+                let val = get_next_value(&mut args_iter, "--reresolve-mode");
+                let parsed = ReresolveMode::from_str(&val).unwrap_or_else(|| {
+                    log_error!("--reresolve-mode must be upstream|listen|both|none (got '{val}')");
+                    print_usage_and_exit(2)
+                });
+                set_once(&mut reresolve_mode, parsed, "--reresolve-mode");
             }
             #[cfg(unix)]
             "--user" => {
@@ -268,6 +309,7 @@ pub fn parse_args() -> Config {
     let stats_interval_mins = stats_interval_mins.unwrap_or(60);
     let max_payload = max_payload.unwrap_or(0);
     let reresolve_secs = reresolve_secs.unwrap_or(0);
+    let reresolve_mode = reresolve_mode.unwrap_or(ReresolveMode::Upstream);
 
     Config {
         listen_addr,
@@ -281,6 +323,7 @@ pub fn parse_args() -> Config {
         stats_interval_mins,
         max_payload,
         reresolve_secs,
+        reresolve_mode,
         #[cfg(unix)]
         run_as_user,
         #[cfg(unix)]

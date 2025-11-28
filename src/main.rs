@@ -139,8 +139,10 @@ fn run_client_to_upstream_thread(
                         );
                         locked.store(true, AtomOrdering::Relaxed);
 
-                        if let Ok(new_handles) =
-                            sock_mgr.reresolve(false, "Re-resolved").map(|(h, _)| h)
+                        // Only refresh upstream on initial lock; keep listener stable for the new client.
+                        if let Ok(new_handles) = sock_mgr
+                            .reresolve(cfg.reresolve_mode.allow_upstream(), false, "Re-resolved")
+                            .map(|(h, _)| h)
                         {
                             handles = new_handles;
                             dest_sa = SockAddr::from(handles.upstream_addr);
@@ -470,7 +472,11 @@ fn main() -> io::Result<()> {
     }
 
     // Optional periodic re-resolve
-    sock_mgr.spawn_periodic(cfg.reresolve_secs, true);
+    sock_mgr.spawn_periodic(
+        cfg.reresolve_secs,
+        cfg.reresolve_mode.allow_upstream(),
+        cfg.reresolve_mode.allow_listen(),
+    );
 
     // Stats thread
     stats.spawn_stats_printer(

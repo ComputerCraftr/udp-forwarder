@@ -204,14 +204,27 @@ impl SocketManager {
     /// Returns handles and a flag indicating whether the listener changed.
     pub fn reresolve(
         &self,
+        allow_upstream: bool,
         allow_listen_rebind: bool,
         context: &str,
     ) -> io::Result<(SocketHandles, bool)> {
-        let (up_sock, up_addr, up_changed) = self.reresolve_upstream(context)?;
+        if !allow_upstream && !allow_listen_rebind {
+            return Ok((self.refresh_handles(), false));
+        }
+
+        let (up_sock, up_addr, up_changed) = if allow_upstream {
+            self.reresolve_upstream(context)?
+        } else {
+            (
+                self.clone_upstream_socket(),
+                *self.upstream_addr.lock().unwrap(),
+                false,
+            )
+        };
 
         let (client_sock, _listen_addr, listen_changed) = if allow_listen_rebind {
-            let res = self.reresolve_listen(context)?;
-            (res.0, Some(res.1), res.2)
+            let (lsock, laddr, lchanged) = self.reresolve_listen(context)?;
+            (lsock, Some(laddr), lchanged)
         } else {
             (self.clone_client_socket(), None, false)
         };
@@ -241,9 +254,10 @@ impl SocketManager {
     pub fn spawn_periodic(
         self: &Arc<Self>,
         reresolve_secs: u64,
+        allow_upstream: bool,
         allow_listen_rebind: bool,
     ) -> bool {
-        if reresolve_secs == 0 {
+        if reresolve_secs == 0 || (!allow_upstream && !allow_listen_rebind) {
             return false;
         }
         // Single-init gate like stats thread: only allow one periodic worker.
@@ -259,7 +273,7 @@ impl SocketManager {
             let period = Duration::from_secs(reresolve_secs);
             loop {
                 thread::sleep(period);
-                let _ = mgr.reresolve(allow_listen_rebind, "Periodic re-resolve");
+                let _ = mgr.reresolve(allow_upstream, allow_listen_rebind, "Periodic re-resolve");
             }
         });
         true
