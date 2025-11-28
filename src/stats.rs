@@ -1,12 +1,10 @@
-use crate::cli::SupportedProtocol;
-use crate::upstream::UpstreamManager;
+use crate::sock_mgr::SocketManager;
 use serde_json::json;
 
 use std::io::Write;
-use std::net::SocketAddr;
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomOrdering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -226,12 +224,7 @@ impl Stats {
         let _ = std::io::stdout().flush();
     }
 
-    fn print_snapshot(
-        &self,
-        client_proto: SupportedProtocol,
-        client_peer_connected: &Mutex<Option<(SocketAddr, bool)>>,
-        upstream_mgr: &UpstreamManager,
-    ) {
+    fn print_snapshot(&self, sock_mgr: &SocketManager, locked: &AtomicBool) {
         let (
             c2u_pkts,
             c2u_bytes,
@@ -266,12 +259,15 @@ impl Stats {
         let u2c_us_ewma = u2c_lat_ewma_ns / 1000;
         let c2u_us_max = c2u_lat_max_ns / 1000;
         let u2c_us_max = u2c_lat_max_ns / 1000;
-        let client_opt = { *client_peer_connected.lock().unwrap() };
-        let locked = client_opt.is_some();
-        let client_addr = client_opt
-            .map(|x| x.0.to_string())
+        let locked = locked.load(AtomOrdering::Relaxed);
+        let (client_addr_opt, _, client_proto) = {
+            let res = sock_mgr.client_dest();
+            (if locked { res.0 } else { None }, res.1, res.2)
+        };
+        let client_addr = client_addr_opt
+            .map(|x| x.to_string())
             .unwrap_or_else(|| "null".to_string());
-        let (upstream_addr, upstream_proto) = { upstream_mgr.current_dest() };
+        let (upstream_addr, _, upstream_proto) = { sock_mgr.upstream_dest() };
         let line = json!({
             "uptime_s": uptime,
             "locked": locked,
@@ -301,9 +297,8 @@ impl Stats {
 
     pub fn spawn_stats_printer(
         self: &Arc<Self>,
-        client_proto: SupportedProtocol,
-        client_peer_connected: Arc<Mutex<Option<(SocketAddr, bool)>>>,
-        upstream_mgr: Arc<UpstreamManager>,
+        sock_mgr: Arc<SocketManager>,
+        locked: Arc<AtomicBool>,
         start: Instant,
         every_secs: u64,
         exit_code_set: Arc<AtomicU32>,
@@ -390,7 +385,7 @@ impl Stats {
                 // Check for cooperative shutdown **after** EWMA is up to date
                 let exit_code_local = exit_code_set.load(AtomOrdering::Relaxed);
                 if (exit_code_local & (1 << 31)) != 0 {
-                    stats.print_snapshot(client_proto, &client_peer_connected, &upstream_mgr);
+                    stats.print_snapshot(&sock_mgr, &locked);
                     let exit_code = (exit_code_local & !(1 << 31)) as i32;
                     process::exit(exit_code);
                 }
@@ -398,7 +393,7 @@ impl Stats {
                 // Print only on schedule
                 let now = Instant::now();
                 if now >= next_print_at {
-                    stats.print_snapshot(client_proto, &client_peer_connected, &upstream_mgr);
+                    stats.print_snapshot(&sock_mgr, &locked);
                     // Advance the next print boundary, accounting for any missed periods
                     let elapsed = now.duration_since(next_print_at).as_secs();
                     let skipped = (elapsed / every) + 1; // at least one boundary

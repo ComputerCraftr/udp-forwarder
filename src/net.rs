@@ -125,7 +125,6 @@ pub fn send_payload(
     buf: &[u8],
     sock_connected: bool,
     sock_type: Type,
-    dest: SocketAddr,
     dest_sa: &SockAddr,
     dest_port_id: u16,
     recv_port_id: u16,
@@ -188,7 +187,6 @@ pub fn send_payload(
             sock,
             sock_connected,
             sock_type,
-            dest,
             dest_sa,
             dest_port_id,
             !c2u,
@@ -216,12 +214,22 @@ pub fn send_payload(
                 stats.send_add(c2u, len as u64, t_recv, t_send);
             }
             Err(e) => {
-                log_debug!(log_drops, "Send to '{}' error: {}", dest, e);
+                log_debug!(
+                    log_drops,
+                    "Send to '{:?}' error: {}",
+                    dest_sa.as_socket(),
+                    e
+                );
                 stats.drop_err(c2u);
             }
         }
     } else if let Err(e) = send_res {
-        log_debug!(log_drops, "Send to '{}' error: {}", dest, e);
+        log_debug!(
+            log_drops,
+            "Send to '{:?}' error: {}",
+            dest_sa.as_socket(),
+            e
+        );
         stats.drop_err(c2u);
     }
     dest_addr_okay
@@ -336,7 +344,6 @@ fn send_icmp_echo(
     sock: &Socket,
     sock_connected: bool,
     sock_type: Type,
-    dest: SocketAddr,
     dest_sa: &SockAddr,
     ident: u16,
     reply: bool,
@@ -359,13 +366,18 @@ fn send_icmp_echo(
     hdr[7] = sqb[1];
 
     // Dest family picks ICMP type and whether we should compute the checksum
-    let cksum = match (dest, sock_type) {
-        // ICMPv6 Echo: type=128(req)/129(rep), code=0; checksum handled in-kernel
-        (SocketAddr::V6(_), _) => {
+    let cksum = match (dest_sa, sock_type) {
+        // ICMPv6 Echo: type=128(req)/129(rep), code=0; checksum always handled in-kernel.
+        (sa, _) if sa.is_ipv6() => {
             hdr[0] = 128u8 | (reply as u8);
             0u16
         }
         // ICMPv4 Echo: type=8(req)/0(rep), code=0.
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        _ => {
+            hdr[0] = 8u8 * (!reply as u8);
+            checksum16(&hdr, payload)
+        }
         // RAW sockets require a manual checksum; datagram sockets get it from the Linux kernel.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         (_, ty) if ty == Type::RAW => {
@@ -376,11 +388,6 @@ fn send_icmp_echo(
         _ => {
             hdr[0] = 8u8 * (!reply as u8);
             0u16
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        _ => {
-            hdr[0] = 8u8 * (!reply as u8);
-            checksum16(&hdr, payload)
         }
     };
 
