@@ -71,11 +71,27 @@ impl SocketManager {
         self.version.load(AtomOrdering::Relaxed)
     }
 
+    /// Bump and return the version when `changed` is true; otherwise, return the current version.
+    #[inline]
+    fn publish_version(&self, changed: bool) -> u64 {
+        if changed {
+            self.version.fetch_add(1, AtomOrdering::Relaxed) + 1
+        } else {
+            self.version.load(AtomOrdering::Relaxed)
+        }
+    }
+
+    /// Whether the listener socket is currently connected to a client.
     #[inline]
     pub fn get_client_connected(&self) -> bool {
         *self.client_connected.lock().unwrap()
     }
 
+    /// Update the locked client address/connected state and publish a new version.
+    ///
+    /// Returns `prev_ver + 1` so callers with a stale cached version stay stale
+    /// and will refresh on the next hot-path check, even if other updates raced
+    /// and advanced the global version further.
     #[inline]
     pub fn set_client_addr_connected(
         &self,
@@ -85,7 +101,7 @@ impl SocketManager {
     ) -> u64 {
         *self.client_addr.lock().unwrap() = addr;
         *self.client_connected.lock().unwrap() = connected;
-        self.version.fetch_add(1, AtomOrdering::Relaxed);
+        self.publish_version(true);
         prev_ver + 1
     }
 
@@ -95,6 +111,7 @@ impl SocketManager {
         *self.listen_addr.lock().unwrap()
     }
 
+    /// Snapshot the current client destination/connected state and protocol.
     #[inline]
     pub fn get_client_dest(&self) -> (Option<SocketAddr>, bool, SupportedProtocol) {
         (
@@ -104,6 +121,7 @@ impl SocketManager {
         )
     }
 
+    /// Snapshot the current upstream destination and protocol.
     #[inline]
     pub fn get_upstream_dest(&self) -> (SocketAddr, bool, SupportedProtocol) {
         (
@@ -230,11 +248,7 @@ impl SocketManager {
         };
 
         let changed_any = up_changed || listen_changed;
-        let ver = if changed_any {
-            self.version.fetch_add(1, AtomOrdering::Relaxed) + 1
-        } else {
-            self.version.load(AtomOrdering::Relaxed)
-        };
+        let ver = self.publish_version(changed_any);
 
         Ok((
             SocketHandles {
@@ -306,5 +320,75 @@ impl SocketManager {
     pub fn clone_upstream_socket(&self) -> Socket {
         let guard = self.upstream_sock.lock().unwrap();
         guard.try_clone().expect("clone upstream socket")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+    use std::sync::Arc;
+    use std::thread;
+
+    fn make_mgr() -> SocketManager {
+        let listen_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (client_sock, actual_listen) =
+            make_socket(listen_addr, SupportedProtocol::UDP, 1000, false, false).unwrap();
+
+        let upstream_sock = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("bind upstream udp");
+        let upstream_addr = upstream_sock.local_addr().unwrap();
+
+        SocketManager::new(
+            client_sock,
+            actual_listen,
+            actual_listen.to_string(),
+            SupportedProtocol::UDP,
+            upstream_addr.to_string(),
+            SupportedProtocol::UDP,
+        )
+        .expect("create socket manager")
+    }
+
+    #[test]
+    fn client_setter_keeps_callers_stale() {
+        let mgr = Arc::new(make_mgr());
+        let v0 = mgr.get_version();
+
+        let addr_a = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 11111);
+        let addr_b = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 22222);
+
+        let a = {
+            let mgr = Arc::clone(&mgr);
+            thread::spawn(move || mgr.set_client_addr_connected(Some(addr_a), true, v0))
+        };
+        let b = {
+            let mgr = Arc::clone(&mgr);
+            thread::spawn(move || mgr.set_client_addr_connected(Some(addr_b), false, v0))
+        };
+
+        let ra = a.join().unwrap();
+        let rb = b.join().unwrap();
+
+        assert_eq!(ra, v0 + 1);
+        assert_eq!(rb, v0 + 1);
+        assert_eq!(mgr.get_version(), v0 + 2);
+    }
+
+    #[test]
+    fn refresh_notices_raced_updates() {
+        let mgr = make_mgr();
+        let mut cached = mgr.refresh_handles();
+        let v0 = cached.version;
+
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 33333);
+        let _ = mgr.set_client_addr_connected(Some(addr), true, v0);
+        let _ = mgr.set_client_addr_connected(Some(addr), false, v0);
+
+        assert_ne!(cached.version, mgr.get_version());
+        cached = mgr.refresh_handles();
+        assert_eq!(cached.version, mgr.get_version());
+        assert_eq!(cached.client_addr, Some(addr));
+        assert!(!cached.client_connected);
     }
 }
