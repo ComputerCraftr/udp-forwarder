@@ -47,6 +47,8 @@ fn stress_one_minute_ipv4(proto: &str) {
         .arg("exit")
         .arg("--stats-interval-mins")
         .arg("1")
+        .arg("--workers")
+        .arg("2")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 

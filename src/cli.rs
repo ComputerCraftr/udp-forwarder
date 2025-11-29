@@ -74,6 +74,7 @@ pub struct Config {
     pub listen_port_id: u16,             // Cached UDP port or ICMP identifier
     pub listen_proto: SupportedProtocol, // UDP | ICMP
     pub listen_str: String,              // original --here host:port string
+    pub workers: usize,                  // listener/upstream worker pairs
     pub upstream_proto: SupportedProtocol, // UDP | ICMP
     pub upstream_str: String,            // FQDN:port or IP:port
     pub timeout_secs: u64,               // idle timeout for single client
@@ -101,6 +102,7 @@ pub fn parse_args() -> Config {
              \t--timeout-secs N         Idle timeout for the single client (default: 10)\n\
              \t--on-timeout drop|exit   What to do on timeout (default: drop)\n\
              \t--stats-interval-mins N  JSON stats print interval minutes (default: 60)\n\
+             \t--workers N              Number of listener/upstream worker pairs (reuse-port, default: 1)\n\
              \t--max-payload N          Payload limit (0=unlimited)\n\
              \t--reresolve-secs N       Re-resolve host(s) every N seconds (0=disabled)\n\
              \t--reresolve-mode WHAT    Which sockets to re-resolve: upstream|listen|both|none (default: upstream)\n\
@@ -189,6 +191,7 @@ pub fn parse_args() -> Config {
     let mut on_timeout: Option<TimeoutAction> = None;
     let mut stats_interval_mins: Option<u32> = None;
     let mut max_payload: Option<usize> = None; // unlimited if None
+    let mut workers: Option<usize> = None; // default 1
     let mut reresolve_secs: Option<u64> = None; // 0 if None
     let mut reresolve_mode: Option<ReresolveMode> = None; // default upstream
 
@@ -239,6 +242,15 @@ pub fn parse_args() -> Config {
                 let val = get_next_value(&mut args_iter, "--max-payload");
                 let parsed = parse_num::<usize>(&val, "--max-payload");
                 set_once(&mut max_payload, parsed, "--max-payload");
+            }
+            "--workers" => {
+                let val = get_next_value(&mut args_iter, "--workers");
+                let parsed = parse_num::<usize>(&val, "--workers");
+                if parsed == 0 {
+                    log_error!("--workers must be >= 1");
+                    print_usage_and_exit(2)
+                }
+                set_once(&mut workers, parsed, "--workers");
             }
             "--reresolve-secs" => {
                 let val = get_next_value(&mut args_iter, "--reresolve-secs");
@@ -308,6 +320,7 @@ pub fn parse_args() -> Config {
     let on_timeout = on_timeout.unwrap_or(TimeoutAction::Drop);
     let stats_interval_mins = stats_interval_mins.unwrap_or(60);
     let max_payload = max_payload.unwrap_or(0);
+    let workers = workers.unwrap_or(1);
     let reresolve_secs = reresolve_secs.unwrap_or(0);
     let reresolve_mode = reresolve_mode.unwrap_or(ReresolveMode::Upstream);
 
@@ -316,6 +329,7 @@ pub fn parse_args() -> Config {
         listen_port_id,
         listen_proto,
         listen_str,
+        workers,
         upstream_proto,
         upstream_str,
         timeout_secs,

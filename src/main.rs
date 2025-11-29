@@ -282,7 +282,7 @@ fn run_upstream_to_client_thread(
 fn run_watchdog_thread(
     t_start: Instant,
     cfg: &Config,
-    sock_mgr: &SocketManager,
+    sock_mgrs: Vec<Arc<SocketManager>>,
     locked: &AtomicBool,
     last_seen_ns: &AtomicU64,
     exit_code_set: &AtomicU32,
@@ -304,13 +304,18 @@ fn run_watchdog_thread(
                             "Idle timeout reached ({}s): dropping locked client; waiting for a new client",
                             cfg.timeout_secs
                         );
-                        if sock_mgr.get_client_connected() {
-                            let client_sock = sock_mgr.clone_client_socket();
-                            if !handle_udp_disconnect(&client_sock, "watchdog", Some(exit_code_set))
-                            {
-                                return;
+                        for sock_mgr in &sock_mgrs {
+                            if sock_mgr.get_client_connected() {
+                                let client_sock = sock_mgr.clone_client_socket();
+                                if !handle_udp_disconnect(
+                                    &client_sock,
+                                    "watchdog",
+                                    Some(exit_code_set),
+                                ) {
+                                    return;
+                                }
+                                sock_mgr.set_client_addr_connected(None, false, 0);
                             }
-                            sock_mgr.set_client_addr_connected(None, false, 0);
                         }
                         locked.store(false, AtomOrdering::Relaxed);
                         last_seen_ns.store(0, AtomOrdering::Relaxed);
@@ -329,6 +334,28 @@ fn run_watchdog_thread(
     }
 }
 
+fn spawn_periodic_all(
+    sock_mgrs: Vec<Arc<SocketManager>>,
+    reresolve_secs: u64,
+    allow_upstream: bool,
+    allow_listen_rebind: bool,
+) -> bool {
+    if reresolve_secs == 0 || (!allow_upstream && !allow_listen_rebind) || sock_mgrs.is_empty() {
+        return false;
+    }
+    thread::spawn(move || {
+        let period = Duration::from_secs(reresolve_secs);
+        loop {
+            thread::sleep(period);
+            for sock_mgr in &sock_mgrs {
+                let _ =
+                    sock_mgr.reresolve(allow_upstream, allow_listen_rebind, "Periodic re-resolve");
+            }
+        }
+    });
+    true
+}
+
 fn print_startup(cfg: &Config, sock_mgr: &SocketManager) {
     let (_, _, client_proto) = { sock_mgr.get_client_dest() };
     let (upstream_addr, _, upstream_proto) = { sock_mgr.get_upstream_dest() };
@@ -344,12 +371,14 @@ fn print_startup(cfg: &Config, sock_mgr: &SocketManager) {
         cfg.timeout_secs,
         cfg.on_timeout
     );
+    log_info!("Workers: {}", cfg.workers);
     log_info!("Re-resolve every: {}s (0=disabled)", cfg.reresolve_secs);
 }
 
 fn main() -> io::Result<()> {
     let t_start = Instant::now();
     let mut user_requested_cfg = parse_args();
+    let worker_count = user_requested_cfg.workers.max(1);
 
     // FreeBSD UDP disconnect is unreliable; keep sockets unconnected so we can relock.
     #[cfg(target_os = "freebsd")]
@@ -362,7 +391,7 @@ fn main() -> io::Result<()> {
         user_requested_cfg.listen_addr,
         user_requested_cfg.listen_proto,
         1000,
-        false,
+        worker_count != 1,
         user_requested_cfg.listen_proto == SupportedProtocol::ICMP,
     )?;
     user_requested_cfg.listen_addr = actual_listen_addr;
@@ -370,21 +399,41 @@ fn main() -> io::Result<()> {
 
     let cfg = Arc::new(user_requested_cfg);
 
-    // Initial upstream resolution + socket manager
-    let sock_mgr = Arc::new(SocketManager::new(
+    // Initial upstream resolution + socket managers (one per worker)
+    let mut sock_mgrs = Vec::with_capacity(worker_count);
+
+    sock_mgrs.push(Arc::new(SocketManager::new(
         client_sock,
         cfg.listen_addr,
         cfg.listen_str.clone(),
         cfg.listen_proto,
         cfg.upstream_str.clone(),
         cfg.upstream_proto,
-    )?);
+    )?));
+
+    for _ in 1..worker_count {
+        let (extra_sock, _) = make_socket(
+            cfg.listen_addr,
+            cfg.listen_proto,
+            1000,
+            true,
+            cfg.listen_proto == SupportedProtocol::ICMP,
+        )?;
+        sock_mgrs.push(Arc::new(SocketManager::new(
+            extra_sock,
+            cfg.listen_addr,
+            cfg.listen_str.clone(),
+            cfg.listen_proto,
+            cfg.upstream_str.clone(),
+            cfg.upstream_proto,
+        )?));
+    }
 
     // Drop privileges (Unix) now that the privileged socket is bound.
     #[cfg(unix)]
     drop_privileges(&cfg)?;
 
-    // Single-client state
+    // Global application state
     let locked = Arc::new(AtomicBool::new(false));
     let last_seen_ns = Arc::new(AtomicU64::new(0));
 
@@ -409,61 +458,62 @@ fn main() -> io::Result<()> {
         })?;
     }
 
-    print_startup(&cfg, &sock_mgr);
+    print_startup(&cfg, &sock_mgrs[0]);
 
-    // Client -> Upstream
-    {
-        let cfg_a = Arc::clone(&cfg);
-        let sock_mgr_a = Arc::clone(&sock_mgr);
-        let locked_a = Arc::clone(&locked);
-        let last_seen_a = Arc::clone(&last_seen_ns);
-        let stats_a = Arc::clone(&stats);
+    for sock_mgr in &sock_mgrs {
+        // Client -> Upstream
+        {
+            let cfg_a = Arc::clone(&cfg);
+            let sock_mgr_a = Arc::clone(&sock_mgr);
+            let locked_a = Arc::clone(&locked);
+            let last_seen_a = Arc::clone(&last_seen_ns);
+            let stats_a = Arc::clone(&stats);
 
-        thread::spawn(move || {
-            run_client_to_upstream_thread(
-                t_start,
-                &cfg_a,
-                &sock_mgr_a,
-                &locked_a,
-                &last_seen_a,
-                &stats_a,
-            )
-        });
+            thread::spawn(move || {
+                run_client_to_upstream_thread(
+                    t_start,
+                    &cfg_a,
+                    &sock_mgr_a,
+                    &locked_a,
+                    &last_seen_a,
+                    &stats_a,
+                )
+            });
+        }
+
+        // Upstream -> Client
+        {
+            let cfg_b = Arc::clone(&cfg);
+            let sock_mgr_b = Arc::clone(&sock_mgr);
+            let locked_b = Arc::clone(&locked);
+            let last_seen_b = Arc::clone(&last_seen_ns);
+            let stats_b = Arc::clone(&stats);
+
+            thread::spawn(move || {
+                run_upstream_to_client_thread(
+                    t_start,
+                    &cfg_b,
+                    &sock_mgr_b,
+                    &locked_b,
+                    &last_seen_b,
+                    &stats_b,
+                )
+            });
+        }
     }
 
-    // Upstream -> Client
-    {
-        let cfg_b = Arc::clone(&cfg);
-        let sock_mgr_b = Arc::clone(&sock_mgr);
-        let locked_b = Arc::clone(&locked);
-        let last_seen_b = Arc::clone(&last_seen_ns);
-        let stats_b = Arc::clone(&stats);
-
-        thread::spawn(move || {
-            run_upstream_to_client_thread(
-                t_start,
-                &cfg_b,
-                &sock_mgr_b,
-                &locked_b,
-                &last_seen_b,
-                &stats_b,
-            )
-        });
-    }
-
-    // Idle timeout watchdog
+    // Idle timeout watchdog for all workers
     {
         let cfg_w = Arc::clone(&cfg);
-        let sock_mgr_w = Arc::clone(&sock_mgr);
+        let sock_mgrs_w = sock_mgrs.clone();
         let locked_w = Arc::clone(&locked);
         let last_seen_w = Arc::clone(&last_seen_ns);
         let exit_code_set_w = Arc::clone(&exit_code_set);
-
         thread::spawn(move || {
             run_watchdog_thread(
                 t_start,
                 &cfg_w,
-                &sock_mgr_w,
+                sock_mgrs_w,
                 &locked_w,
                 &last_seen_w,
                 &exit_code_set_w,
@@ -471,16 +521,17 @@ fn main() -> io::Result<()> {
         });
     }
 
-    // Optional periodic re-resolve
-    sock_mgr.spawn_periodic(
+    // Optional periodic re-resolve across all workers
+    spawn_periodic_all(
+        sock_mgrs.clone(),
         cfg.reresolve_secs,
         cfg.reresolve_mode.allow_upstream(),
         cfg.reresolve_mode.allow_listen(),
     );
 
-    // Stats thread
+    // Stats thread (report peer info from the first worker)
     stats.spawn_stats_printer(
-        Arc::clone(&sock_mgr),
+        Arc::clone(&sock_mgrs[0]),
         Arc::clone(&locked),
         t_start,
         u64::from(cfg.stats_interval_mins).saturating_mul(60),

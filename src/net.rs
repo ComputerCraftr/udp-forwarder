@@ -58,6 +58,9 @@ pub fn make_socket(
 
     if reuseaddr {
         sock.set_reuse_address(true)?;
+        // Best effort: only some platforms support SO_REUSEPORT.
+        #[cfg(unix)]
+        sock.set_reuse_port(true)?;
     }
 
     // Best-effort bigger buffers

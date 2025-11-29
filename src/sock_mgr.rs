@@ -4,10 +4,8 @@ use socket2::{SockAddr, Socket};
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomOrdering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering as AtomOrdering};
 
 /// Snapshot of sockets and destination used by worker threads.
 pub struct SocketHandles {
@@ -34,7 +32,6 @@ pub struct SocketManager {
     upstream_proto: SupportedProtocol, // never changes
     upstream_sock: Mutex<Socket>,      // cold-path replacement only
     version: AtomicU64,                // increments on any change
-    spawned: AtomicBool,               // ensures spawn_periodic runs once
 }
 
 impl SocketManager {
@@ -61,7 +58,6 @@ impl SocketManager {
             upstream_proto,
             upstream_sock: Mutex::new(sock),
             version: AtomicU64::new(0),
-            spawned: AtomicBool::new(false),
         })
     }
 
@@ -262,35 +258,6 @@ impl SocketManager {
             },
             listen_changed,
         ))
-    }
-
-    /// Optional periodic re-resolve while locked.
-    pub fn spawn_periodic(
-        self: &Arc<Self>,
-        reresolve_secs: u64,
-        allow_upstream: bool,
-        allow_listen_rebind: bool,
-    ) -> bool {
-        if reresolve_secs == 0 || (!allow_upstream && !allow_listen_rebind) {
-            return false;
-        }
-        // Single-init gate like stats thread: only allow one periodic worker.
-        if self
-            .spawned
-            .compare_exchange(false, true, AtomOrdering::Relaxed, AtomOrdering::Relaxed)
-            .is_err()
-        {
-            return false; // already running
-        }
-        let mgr = Arc::clone(self);
-        thread::spawn(move || {
-            let period = Duration::from_secs(reresolve_secs);
-            loop {
-                thread::sleep(period);
-                let _ = mgr.reresolve(allow_upstream, allow_listen_rebind, "Periodic re-resolve");
-            }
-        });
-        true
     }
 
     /// Clone sockets and destination (cold path under mutexes).
