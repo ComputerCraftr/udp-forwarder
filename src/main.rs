@@ -21,8 +21,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[inline]
-fn handle_udp_disconnect(sock: &Socket, context: &str, exit_code_set: Option<&AtomicU32>) -> bool {
-    match udp_disconnect(sock) {
+fn handle_udp_disconnect(
+    sock_mgr_opt: Option<&SocketManager>,
+    sock_opt: Option<&Socket>,
+    context: &str,
+    exit_code_set: Option<&AtomicU32>,
+) -> bool {
+    let res = if let Some(sock_mgr) = sock_mgr_opt {
+        sock_mgr.set_client_sock_disconnected()
+    } else if let Some(sock) = sock_opt {
+        udp_disconnect(sock)
+    } else {
+        return false;
+    };
+
+    match res {
         Ok(_) => true,
         Err(e) => {
             if let Some(exit) = exit_code_set {
@@ -226,10 +239,11 @@ fn run_client_to_upstream_thread(
                         );
 
                         // Only refresh upstream on initial lock; keep listener stable for the new client.
-                        if let Ok(new_handles) = sock_mgr
-                            .reresolve(cfg.reresolve_mode.allow_upstream(), false, "Re-resolved")
-                            .map(|(h, _)| h)
-                        {
+                        if let Ok(new_handles) = sock_mgr.reresolve(
+                            cfg.reresolve_mode.allow_upstream(),
+                            false,
+                            "Re-resolved",
+                        ) {
                             handles = new_handles;
                             cache.refresh_from_handles(&handles);
                         }
@@ -322,7 +336,12 @@ fn run_upstream_to_client_thread(
                         cfg.debug_log_drops,
                     ) && handles.client_connected
                     {
-                        handle_udp_disconnect(&handles.client_sock, "dest-addr-required", None);
+                        handle_udp_disconnect(
+                            None,
+                            Some(&handles.client_sock),
+                            "dest-addr-required",
+                            None,
+                        );
                         handles.client_connected = false;
                         handles.version = sock_mgr.set_client_addr_connected(
                             handles.client_addr,
@@ -371,9 +390,9 @@ fn run_watchdog_thread(
                         );
                         for sock_mgr in sock_mgrs {
                             if sock_mgr.get_client_connected() {
-                                let client_sock = sock_mgr.clone_client_socket();
                                 if !handle_udp_disconnect(
-                                    &client_sock,
+                                    Some(&sock_mgr),
+                                    None,
                                     "watchdog",
                                     Some(exit_code_set),
                                 ) {
@@ -422,8 +441,8 @@ fn spawn_periodic_all(
 }
 
 fn print_startup(cfg: &Config, sock_mgr: &SocketManager) {
-    let (_, _, client_proto) = { sock_mgr.get_client_dest() };
-    let (upstream_addr, _, upstream_proto) = { sock_mgr.get_upstream_dest() };
+    let (_, _, client_proto) = sock_mgr.get_client_dest();
+    let (upstream_addr, _, upstream_proto) = sock_mgr.get_upstream_dest();
     log_info!(
         "Listening on {}:{}, forwarding to upstream {}:{}; waiting for first client",
         client_proto,

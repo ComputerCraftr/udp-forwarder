@@ -1,5 +1,7 @@
 use crate::cli::SupportedProtocol;
-use crate::net::{family_changed, make_socket, make_upstream_socket_for, resolve_first};
+use crate::net::{
+    family_changed, make_socket, make_upstream_socket_for, resolve_first, udp_disconnect,
+};
 use socket2::{SockAddr, Socket};
 
 use std::io;
@@ -18,20 +20,18 @@ pub struct SocketHandles {
     pub version: u64,
 }
 
-/// Manages both local and upstream sockets and publishes versioned updates.
+/// Manages both local and upstream sockets and publishes versioned updates. Lock order: _addr -> _addr_connected -> _sock
 pub struct SocketManager {
-    client_addr: Mutex<Option<SocketAddr>>, // cold-path updates only
-    client_connected: Mutex<bool>,
-    client_sock: Mutex<Socket>,        // shared listener socket
-    listen_addr: Mutex<SocketAddr>,    // current bound address
-    listen_target: String,             // unresolved --here host:port
-    listen_proto: SupportedProtocol,   // never changes
-    upstream_target: String,           // unresolved --there host:port
-    upstream_addr: Mutex<SocketAddr>,  // cold-path updates only
-    upstream_connected: bool,          // connected at creation
-    upstream_proto: SupportedProtocol, // never changes
-    upstream_sock: Mutex<Socket>,      // cold-path replacement only
-    version: AtomicU64,                // increments on any change
+    client_addr_connected: Mutex<(Option<SocketAddr>, bool)>, // cold-path updates only
+    client_sock: Mutex<Socket>,                               // shared listener socket
+    listen_addr: Mutex<SocketAddr>,                           // current bound address
+    listen_target: String,                                    // unresolved --here host:port
+    listen_proto: SupportedProtocol,                          // never changes
+    upstream_target: String,                                  // unresolved --there host:port
+    upstream_addr_connected: Mutex<(SocketAddr, bool)>,       // cold-path updates only
+    upstream_proto: SupportedProtocol,                        // never changes
+    upstream_sock: Mutex<Socket>,                             // cold-path replacement only
+    version: AtomicU64,                                       // increments on any change
 }
 
 impl SocketManager {
@@ -46,15 +46,13 @@ impl SocketManager {
         let dest = resolve_first(&upstream_target)?;
         let (sock, _actual_dest) = make_upstream_socket_for(dest, upstream_proto)?;
         Ok(Self {
-            client_addr: Mutex::new(None),
-            client_connected: Mutex::new(false),
+            client_addr_connected: Mutex::new((None, false)),
             client_sock: Mutex::new(client_sock),
             listen_addr: Mutex::new(listen_addr),
             listen_target,
             listen_proto,
             upstream_target,
-            upstream_addr: Mutex::new(dest),
-            upstream_connected: true,
+            upstream_addr_connected: Mutex::new((dest, true)),
             upstream_proto,
             upstream_sock: Mutex::new(sock),
             version: AtomicU64::new(0),
@@ -80,7 +78,7 @@ impl SocketManager {
     /// Whether the listener socket is currently connected to a client.
     #[inline]
     pub fn get_client_connected(&self) -> bool {
-        *self.client_connected.lock().unwrap()
+        self.client_addr_connected.lock().unwrap().1
     }
 
     /// Update the locked client address/connected state and publish a new version.
@@ -95,10 +93,16 @@ impl SocketManager {
         connected: bool,
         prev_ver: u64,
     ) -> u64 {
-        *self.client_addr.lock().unwrap() = addr;
-        *self.client_connected.lock().unwrap() = connected;
+        *self.client_addr_connected.lock().unwrap() = (addr, connected);
         self.publish_version(true);
         prev_ver + 1
+    }
+
+    /// Disconnect the local listener socket.
+    #[inline]
+    pub fn set_client_sock_disconnected(&self) -> io::Result<()> {
+        // Use a clone because the original may not be marked as connected
+        udp_disconnect(&self.client_sock.lock().unwrap().try_clone()?)
     }
 
     /// Current listen bind address.
@@ -110,34 +114,28 @@ impl SocketManager {
     /// Snapshot the current client destination/connected state and protocol.
     #[inline]
     pub fn get_client_dest(&self) -> (Option<SocketAddr>, bool, SupportedProtocol) {
-        (
-            *self.client_addr.lock().unwrap(),
-            *self.client_connected.lock().unwrap(),
-            self.listen_proto,
-        )
+        let (addr, connected) = *self.client_addr_connected.lock().unwrap();
+        (addr, connected, self.listen_proto)
     }
 
     /// Snapshot the current upstream destination and protocol.
     #[inline]
     pub fn get_upstream_dest(&self) -> (SocketAddr, bool, SupportedProtocol) {
-        (
-            *self.upstream_addr.lock().unwrap(),
-            self.upstream_connected,
-            self.upstream_proto,
-        )
+        let (addr, connected) = *self.upstream_addr_connected.lock().unwrap();
+        (addr, connected, self.upstream_proto)
     }
 
     fn reresolve_upstream(&self, context: &str) -> io::Result<(Socket, SocketAddr, bool)> {
         let fresh = resolve_first(&self.upstream_target)?;
 
         // Compare against previous before updating to compute correct family flip
+        let mut upstream_guard = self.upstream_addr_connected.lock().unwrap();
         let (fam_flip, changed) = {
-            let mut cur = self.upstream_addr.lock().unwrap();
-            let prev = *cur;
-            let changed = prev.ip() != fresh.ip();
+            let (prev_addr, _prev_conn) = *upstream_guard;
+            let changed = prev_addr.ip() != fresh.ip();
             let fam_flip = if changed {
-                *cur = fresh;
-                family_changed(prev, fresh)
+                *upstream_guard = (fresh, true);
+                family_changed(prev_addr, fresh)
             } else {
                 false
             };
@@ -149,10 +147,7 @@ impl SocketManager {
             log_info!("{context}: upstream {fresh} (family changed; upstream socket swapped)");
             // Family changed: create a new **connected** upstream socket and swap it in.
             let (new_sock, _new_dest) = make_upstream_socket_for(fresh, self.upstream_proto)?;
-            {
-                let mut guard = self.upstream_sock.lock().unwrap();
-                *guard = new_sock.try_clone()?;
-            }
+            *self.upstream_sock.lock().unwrap() = new_sock.try_clone()?;
             new_sock
         } else if changed {
             log_info!("{context}: upstream {fresh}");
@@ -170,23 +165,26 @@ impl SocketManager {
         Ok((ret_sock, fresh, fam_flip || changed))
     }
 
-    fn reresolve_listen(&self, context: &str) -> io::Result<(Socket, SocketAddr, bool)> {
+    fn reresolve_listen(
+        &self,
+        context: &str,
+    ) -> io::Result<(Socket, Option<SocketAddr>, bool, SocketAddr, bool)> {
         let fresh = resolve_first(&self.listen_target)?;
 
+        let mut listen_guard = self.listen_addr.lock().unwrap();
         let (fam_flip, changed) = {
-            let mut cur = self.listen_addr.lock().unwrap();
-            let prev = *cur;
-            let changed = prev.ip() != fresh.ip();
+            let prev_addr = *listen_guard;
+            let changed = prev_addr.ip() != fresh.ip();
             let fam_flip = if changed {
-                *cur = fresh;
-                family_changed(prev, fresh)
+                *listen_guard = fresh;
+                family_changed(prev_addr, fresh)
             } else {
                 false
             };
             (fam_flip, changed)
         };
 
-        let ret_sock = if fam_flip || changed {
+        let (ret_sock, caddr, cconn, laddr) = if fam_flip || changed {
             log_info!("{context}: listen {fresh} (listener swapped)");
             let (new_sock, actual_bind) = make_socket(
                 fresh,
@@ -195,22 +193,26 @@ impl SocketManager {
                 false,
                 self.listen_proto == SupportedProtocol::ICMP,
             )?;
-            {
-                *self.client_addr.lock().unwrap() = None;
-                *self.client_connected.lock().unwrap() = false;
-                *self.client_sock.lock().unwrap() = new_sock.try_clone()?;
-                *self.listen_addr.lock().unwrap() = actual_bind;
-            }
-            new_sock
+
+            // Update the internal socket state
+            let mut client_guard = self.client_addr_connected.lock().unwrap();
+            let mut client_sock_guard = self.client_sock.lock().unwrap();
+            *listen_guard = actual_bind;
+            *client_guard = (None, false);
+            *client_sock_guard = new_sock.try_clone()?;
+            (new_sock, None, false, actual_bind)
         } else {
-            self.clone_client_socket()
+            let client_guard = self.client_addr_connected.lock().unwrap();
+            let client_sock_guard = self.client_sock.lock().unwrap();
+            (
+                client_sock_guard.try_clone()?,
+                client_guard.0,
+                client_guard.1,
+                fresh,
+            )
         };
 
-        Ok((
-            ret_sock,
-            *self.listen_addr.lock().unwrap(),
-            fam_flip || changed,
-        ))
+        Ok((ret_sock, caddr, cconn, laddr, fam_flip || changed))
     }
 
     /// Re-resolve both ends and publish any changes. When `allow_listen_rebind`
@@ -221,72 +223,76 @@ impl SocketManager {
         allow_upstream: bool,
         allow_listen_rebind: bool,
         context: &str,
-    ) -> io::Result<(SocketHandles, bool)> {
+    ) -> io::Result<SocketHandles> {
         if !allow_upstream && !allow_listen_rebind {
-            return Ok((self.refresh_handles(), false));
+            return Ok(self.refresh_handles());
         }
 
-        let (up_sock, up_addr, up_changed) = if allow_upstream {
-            self.reresolve_upstream(context)?
+        let (client_sock, client_addr, client_connected, listen_changed) = if allow_listen_rebind {
+            let res = self.reresolve_listen(context)?;
+            (res.0, res.1, res.2, res.4)
         } else {
+            let client_guard = self.client_addr_connected.lock().unwrap();
+            let client_sock_guard = self.client_sock.lock().unwrap();
             (
-                self.clone_upstream_socket(),
-                *self.upstream_addr.lock().unwrap(),
+                client_sock_guard.try_clone()?,
+                client_guard.0,
+                client_guard.1,
                 false,
             )
         };
 
-        let (client_sock, _listen_addr, listen_changed) = if allow_listen_rebind {
-            let (lsock, laddr, lchanged) = self.reresolve_listen(context)?;
-            (lsock, Some(laddr), lchanged)
+        let (upstream_sock, upstream_addr, upstream_connected, upstream_changed) = if allow_upstream
+        {
+            let res = self.reresolve_upstream(context)?;
+            (res.0, res.1, true, res.2)
         } else {
-            (self.clone_client_socket(), None, false)
+            let upstream_guard = self.upstream_addr_connected.lock().unwrap();
+            let upstream_sock_guard = self.upstream_sock.lock().unwrap();
+            (
+                upstream_sock_guard.try_clone()?,
+                upstream_guard.0,
+                upstream_guard.1,
+                false,
+            )
         };
 
-        let changed_any = up_changed || listen_changed;
-        let ver = self.publish_version(changed_any);
+        let changed_any = listen_changed || upstream_changed;
+        let version = self.publish_version(changed_any);
 
-        Ok((
-            SocketHandles {
-                client_addr: *self.client_addr.lock().unwrap(),
-                client_connected: *self.client_connected.lock().unwrap(),
-                client_sock,
-                upstream_addr: up_addr,
-                upstream_connected: self.upstream_connected,
-                upstream_sock: up_sock,
-                version: ver,
-            },
-            listen_changed,
-        ))
+        Ok(SocketHandles {
+            client_addr,
+            client_connected,
+            client_sock,
+            upstream_addr,
+            upstream_connected,
+            upstream_sock,
+            version,
+        })
     }
 
     /// Clone sockets and destination (cold path under mutexes).
     /// Use this only when your cached version != `version()`.
     #[inline]
     pub fn refresh_handles(&self) -> SocketHandles {
+        // Snapshot all mutable state while holding the relevant locks so the
+        // returned version matches the handles we hand back.
+        let client_guard = self.client_addr_connected.lock().unwrap();
+        let client_sock_guard = self.client_sock.lock().unwrap();
+        let upstream_guard = self.upstream_addr_connected.lock().unwrap();
+        let upstream_sock_guard = self.upstream_sock.lock().unwrap();
+
         SocketHandles {
-            client_addr: *self.client_addr.lock().unwrap(),
-            client_connected: *self.client_connected.lock().unwrap(),
-            client_sock: self.clone_client_socket(),
-            upstream_addr: self.get_upstream_dest().0,
-            upstream_connected: self.upstream_connected,
-            upstream_sock: self.clone_upstream_socket(),
+            client_addr: client_guard.0,
+            client_connected: client_guard.1,
+            client_sock: client_sock_guard.try_clone().expect("clone client socket"),
+            upstream_addr: upstream_guard.0,
+            upstream_connected: upstream_guard.1,
+            upstream_sock: upstream_sock_guard
+                .try_clone()
+                .expect("clone upstream socket"),
             version: self.get_version(),
         }
-    }
-
-    /// Expose the local listener socket.
-    #[inline]
-    pub fn clone_client_socket(&self) -> Socket {
-        let guard = self.client_sock.lock().unwrap();
-        guard.try_clone().expect("clone client socket")
-    }
-
-    /// Back-compat: clone the upstream socket only (cold path). Prefer `refresh_handles`.
-    #[inline]
-    pub fn clone_upstream_socket(&self) -> Socket {
-        let guard = self.upstream_sock.lock().unwrap();
-        guard.try_clone().expect("clone upstream socket")
     }
 }
 

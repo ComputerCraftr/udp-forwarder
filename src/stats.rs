@@ -267,7 +267,7 @@ impl Stats {
         let client_addr = client_addr_opt
             .map(|x| x.to_string())
             .unwrap_or_else(|| "null".to_string());
-        let (upstream_addr, _, upstream_proto) = { sock_mgr.get_upstream_dest() };
+        let (upstream_addr, _, upstream_proto) = sock_mgr.get_upstream_dest();
         let line = json!({
             "uptime_s": uptime,
             "locked": locked,
