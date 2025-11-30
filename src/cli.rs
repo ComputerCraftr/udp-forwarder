@@ -89,6 +89,7 @@ pub struct Config {
     pub run_as_group: Option<String>,
     pub debug_no_connect: bool,
     pub debug_log_drops: bool,
+    pub debug_log_handles: bool,
 }
 
 pub fn parse_args() -> Config {
@@ -108,7 +109,7 @@ pub fn parse_args() -> Config {
              \t--reresolve-mode WHAT    Which sockets to re-resolve: upstream|listen|both|none (default: upstream)\n\
              \t--user NAME              Drop privileges to this user (Unix only)\n\
              \t--group NAME             Drop privileges to this group (Unix only)\n\
-             \t--debug WHAT             Enable debug behavior (repeatable); WHAT = no-connect|log-drops\n\
+             \t--debug WHAT             Enable debug behavior (repeatable); WHAT = no-connect|log-drops|log-handles\n\
              \t-h, --help               Show this help and exit"
         );
         process::exit(code)
@@ -201,6 +202,7 @@ pub fn parse_args() -> Config {
     let mut run_as_group: Option<String> = None;
     let mut debug_no_connect = false;
     let mut debug_log_drops = false;
+    let mut debug_log_handles = false;
 
     // Parse flags using an iterator (no manual index math)
     let mut args_iter = env::args().skip(1).peekable();
@@ -285,8 +287,11 @@ pub fn parse_args() -> Config {
                     match flag {
                         "no-connect" => debug_no_connect = true,
                         "log-drops" => debug_log_drops = true,
+                        "log-handles" => debug_log_handles = true,
                         _ => {
-                            log_error!("--debug expects no-connect or log-drops (got '{flag}')");
+                            log_error!(
+                                "--debug expects no-connect, log-drops, or log-handles (got '{flag}')"
+                            );
                             print_usage_and_exit(2)
                         }
                     }
@@ -344,5 +349,6 @@ pub fn parse_args() -> Config {
         run_as_group,
         debug_no_connect,
         debug_log_drops,
+        debug_log_handles,
     }
 }

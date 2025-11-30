@@ -29,10 +29,11 @@ struct CachedClientState {
     dest_sa: SockAddr,
     dest_port_id: u16,
     recv_port_id: u16,
+    log_handles: bool,
 }
 
 impl CachedClientState {
-    fn new(c2u: bool, handles: &SocketHandles, recv_port_id: u16) -> Self {
+    fn new(c2u: bool, handles: &SocketHandles, recv_port_id: u16, log_handles: bool) -> Self {
         if c2u {
             Self {
                 c2u,
@@ -41,6 +42,7 @@ impl CachedClientState {
                 dest_sa: SockAddr::from(handles.upstream_addr),
                 dest_port_id: handles.upstream_addr.port(),
                 recv_port_id,
+                log_handles,
             }
         } else {
             let (dest_sa, dest_port_id) = handles
@@ -59,6 +61,7 @@ impl CachedClientState {
                 dest_sa,
                 dest_port_id,
                 recv_port_id,
+                log_handles,
             }
         }
     }
@@ -82,8 +85,20 @@ impl CachedClientState {
     #[inline]
     fn refresh_handles_and_cache(&mut self, sock_mgr: &SocketManager, handles: &mut SocketHandles) {
         if handles.version != sock_mgr.get_version() {
+            let prev_ver = handles.version;
             *handles = sock_mgr.refresh_handles();
             self.refresh_from_handles(handles);
+            log_debug!(
+                self.log_handles,
+                "refresh_handles_and_cache: stale={}, new_ver={}, c2u={}, client_addr={:?}, client_connected={}, upstream_addr={}, upstream_connected={}",
+                prev_ver,
+                handles.version,
+                self.c2u,
+                handles.client_addr,
+                handles.client_connected,
+                handles.upstream_addr,
+                handles.upstream_connected
+            );
         }
     }
 }
@@ -168,7 +183,14 @@ pub fn run_watchdog_thread(
                                 ) {
                                     return;
                                 }
-                                sock_mgr.set_client_addr_connected(None, false, 0);
+                                let prev = sock_mgr.get_version();
+                                let ver = sock_mgr.set_client_addr_connected(None, false, 0);
+                                log_debug!(
+                                    cfg.debug_log_handles,
+                                    "watchdog publish disconnect: ver {}->{}",
+                                    prev,
+                                    ver
+                                );
                             }
                         }
                         locked.store(false, AtomOrdering::Relaxed);
@@ -196,10 +218,16 @@ pub fn run_upstream_to_client_thread(
     last_seen_ns: &AtomicU64,
     stats: &Stats,
 ) {
+    const C2U: bool = false;
     let mut buf = vec![0u8; 65535];
     // Cache upstream socket and destination; refresh only when version changes
     let mut handles = sock_mgr.refresh_handles();
-    let mut cache = CachedClientState::new(false, &handles, handles.upstream_addr.port());
+    let mut cache = CachedClientState::new(
+        C2U,
+        &handles,
+        handles.upstream_addr.port(),
+        cfg.debug_log_handles,
+    );
     loop {
         match handles.upstream_sock.recv(as_uninit_mut(&mut buf)) {
             Ok(len) => {
@@ -210,7 +238,7 @@ pub fn run_upstream_to_client_thread(
 
                 if locked.load(AtomOrdering::Relaxed) {
                     if !send_payload(
-                        false,
+                        C2U,
                         t_start,
                         t_recv,
                         cfg,
@@ -226,6 +254,10 @@ pub fn run_upstream_to_client_thread(
                         cfg.debug_log_drops,
                     ) && handles.client_connected
                     {
+                        let prev_ver = handles.version;
+                        log_warn!(
+                            "send_payload u2c failed (dest-addr-required); disconnecting client socket"
+                        );
                         handle_udp_disconnect(
                             None,
                             Some(&handles.client_sock),
@@ -238,6 +270,13 @@ pub fn run_upstream_to_client_thread(
                             false,
                             handles.version,
                         );
+                        log_debug!(
+                            cfg.debug_log_handles,
+                            "u2c publish disconnect: addr={:?} ver {}->{}",
+                            handles.client_addr,
+                            prev_ver,
+                            handles.version
+                        );
                     }
                 }
             }
@@ -246,7 +285,7 @@ pub fn run_upstream_to_client_thread(
             }
             Err(e) => {
                 log_error!("recv upstream (connected) error: {}", e);
-                stats.drop_err(false);
+                stats.drop_err(C2U);
                 thread::sleep(Duration::from_millis(10));
             }
         }
@@ -262,10 +301,12 @@ pub fn run_client_to_upstream_thread(
     last_seen_ns: &AtomicU64,
     stats: &Stats,
 ) {
+    const C2U: bool = true;
     let mut buf = vec![0u8; 65535];
     // Cache upstream socket and destination; refresh only when version changes
     let mut handles = sock_mgr.refresh_handles();
-    let mut cache = CachedClientState::new(true, &handles, cfg.listen_port_id);
+    let mut cache =
+        CachedClientState::new(C2U, &handles, cfg.listen_port_id, cfg.debug_log_handles);
     loop {
         // Cheap hot-path check: only refresh when manager version changes
         cache.refresh_handles_and_cache(sock_mgr, &mut handles);
@@ -276,7 +317,7 @@ pub fn run_client_to_upstream_thread(
                     let t_recv = Instant::now();
                     if locked.load(AtomOrdering::Relaxed) {
                         send_payload(
-                            true,
+                            C2U,
                             t_start,
                             t_recv,
                             cfg,
@@ -298,7 +339,7 @@ pub fn run_client_to_upstream_thread(
                         || e.kind() == io::ErrorKind::TimedOut => {}
                 Err(e) => {
                     log_error!("recv client (connected) error: {}", e);
-                    stats.drop_err(true);
+                    stats.drop_err(C2U);
                     thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -338,6 +379,13 @@ pub fn run_client_to_upstream_thread(
                             handles.client_connected,
                             handles.version,
                         );
+                        log_debug!(
+                            cfg.debug_log_handles,
+                            "c2u publish lock: addr={:?} connected={} ver {}",
+                            addr_opt,
+                            handles.client_connected,
+                            handles.version
+                        );
 
                         // Propagate client connection to workers
                         for mgr in all_sock_mgrs {
@@ -362,7 +410,7 @@ pub fn run_client_to_upstream_thread(
 
                         // Forward the first packet from the new client
                         send_payload(
-                            true,
+                            C2U,
                             t_start,
                             t_recv,
                             cfg,
@@ -380,7 +428,7 @@ pub fn run_client_to_upstream_thread(
                     } else if Some(src_sa) == cache.client_sa {
                         // Only forward packets from the locked client (recv_from may still deliver before connect succeeds)
                         send_payload(
-                            true,
+                            C2U,
                             t_start,
                             t_recv,
                             cfg,
@@ -402,7 +450,7 @@ pub fn run_client_to_upstream_thread(
                         || e.kind() == io::ErrorKind::TimedOut => {}
                 Err(e) => {
                     log_error!("recv_from client error: {}", e);
-                    stats.drop_err(true);
+                    stats.drop_err(C2U);
                     thread::sleep(Duration::from_millis(10));
                 }
             }
