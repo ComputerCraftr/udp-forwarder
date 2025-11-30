@@ -98,6 +98,25 @@ impl SocketManager {
         prev_ver + 1
     }
 
+    /// Update the locked client address and connect the local listener socket.
+    #[allow(dead_code)]
+    pub fn set_client_sock_connected(
+        &self,
+        addr: Option<SocketAddr>,
+        connected: bool,
+        client_sa: &SockAddr,
+        prev_ver: u64,
+    ) -> io::Result<u64> {
+        let mut client_guard = self.client_addr_connected.lock().unwrap();
+        let client_sock_guard = self.client_sock.lock().unwrap();
+        *client_guard = (addr, connected);
+        if connected {
+            client_sock_guard.connect(client_sa)?;
+        }
+        self.publish_version(true);
+        Ok(prev_ver + 1)
+    }
+
     /// Disconnect the local listener socket.
     #[inline]
     pub fn set_client_sock_disconnected(&self) -> io::Result<()> {

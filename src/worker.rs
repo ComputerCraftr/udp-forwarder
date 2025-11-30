@@ -184,7 +184,7 @@ pub fn run_watchdog_thread(
                                     return;
                                 }
                                 let prev = sock_mgr.get_version();
-                                let ver = sock_mgr.set_client_addr_connected(None, false, 0);
+                                let ver = sock_mgr.set_client_addr_connected(None, false, prev);
                                 log_debug!(
                                     cfg.debug_log_handles,
                                     "watchdog publish disconnect: ver {}->{}",
@@ -373,7 +373,7 @@ pub fn run_client_to_upstream_thread(
                             log_info!("Locked to single client {} (connected)", src);
                         }
 
-                        // Publish lock state to all workers so their sockets connect to the client.
+                        // Publish lock state for this worker
                         handles.version = sock_mgr.set_client_addr_connected(
                             addr_opt,
                             handles.client_connected,
@@ -381,13 +381,14 @@ pub fn run_client_to_upstream_thread(
                         );
                         log_debug!(
                             cfg.debug_log_handles,
-                            "c2u publish lock: addr={:?} connected={} ver {}",
+                            "c2u publish lock: addr={:?} connected={} ver={}",
                             addr_opt,
                             handles.client_connected,
                             handles.version
                         );
 
-                        // Propagate client connection to workers
+                        // Propagate client address to other workers and attempt send/recv before fallback.
+                        // Duplicate connect() may cause EADDRINUSE on the same 5-tuple across SO_REUSEPORT sockets.
                         for mgr in all_sock_mgrs {
                             if !std::ptr::eq(mgr.as_ref(), sock_mgr) {
                                 mgr.set_client_addr_connected(
