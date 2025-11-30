@@ -126,37 +126,6 @@ impl CachedClientState {
     }
 }
 
-fn connect_primary_listener(
-    cfg: &Config,
-    handles: &mut SocketHandles,
-    src_sa: &SockAddr,
-    src: SocketAddr,
-) {
-    handles.client_connected = false;
-    if cfg.debug_no_connect {
-        log_info!("Locked to single client {} (not connected)", src);
-    } else if let Err(e) = handles.client_sock.connect(src_sa) {
-        log_error!("connect client_sock to {} failed: {}", src, e);
-        log_info!("Locked to single client {} (not connected)", src);
-    } else {
-        handles.client_connected = true;
-        log_info!("Locked to single client {} (connected)", src);
-    }
-}
-
-fn propagate_client_addr_to_workers(
-    all_sock_mgrs: &[Arc<SocketManager>],
-    primary_mgr: &SocketManager,
-    addr_opt: Option<SocketAddr>,
-    connected: bool,
-) {
-    for mgr in all_sock_mgrs {
-        if !std::ptr::eq(mgr.as_ref(), primary_mgr) {
-            mgr.set_client_addr_connected(addr_opt, connected, 0);
-        }
-    }
-}
-
 fn run_client_to_upstream_thread(
     t_start: Instant,
     cfg: &Config,
@@ -188,7 +157,7 @@ fn run_client_to_upstream_thread(
                             last_seen_ns,
                             &handles.upstream_sock,
                             &buf[..len],
-                            handles.upstream_connected, // Upstream socket is always connected
+                            handles.upstream_connected,
                             cache.dest_sock_type,
                             &cache.dest_sa,
                             cache.dest_port_id,
@@ -223,20 +192,36 @@ fn run_client_to_upstream_thread(
                         // Signal to other threads that a client is currently being locked
                         locked.store(true, AtomOrdering::Relaxed);
                         cache.client_sa = Some(SockAddr::from(src));
+                        let addr_opt = Some(src);
 
-                        connect_primary_listener(cfg, &mut handles, &src_sa, src);
+                        handles.client_connected = false;
+                        if cfg.debug_no_connect {
+                            log_info!("Locked to single client {} (not connected)", src);
+                        } else if let Err(e) = handles.client_sock.connect(&src_sa) {
+                            log_error!("connect client_sock to {} failed: {}", src, e);
+                            log_info!("Locked to single client {} (not connected)", src);
+                        } else {
+                            handles.client_connected = true;
+                            log_info!("Locked to single client {} (connected)", src);
+                        }
+
                         // Publish lock state to all workers so their sockets connect to the client.
                         handles.version = sock_mgr.set_client_addr_connected(
-                            Some(src),
+                            addr_opt,
                             handles.client_connected,
                             handles.version,
                         );
-                        propagate_client_addr_to_workers(
-                            all_sock_mgrs,
-                            sock_mgr,
-                            Some(src),
-                            handles.client_connected,
-                        );
+
+                        // Propagate client connection to workers
+                        for mgr in all_sock_mgrs {
+                            if !std::ptr::eq(mgr.as_ref(), sock_mgr) {
+                                mgr.set_client_addr_connected(
+                                    addr_opt,
+                                    handles.client_connected,
+                                    0,
+                                );
+                            }
+                        }
 
                         // Only refresh upstream on initial lock; keep listener stable for the new client.
                         if let Ok(new_handles) = sock_mgr.reresolve(
@@ -258,7 +243,7 @@ fn run_client_to_upstream_thread(
                             last_seen_ns,
                             &handles.upstream_sock,
                             &buf[..len],
-                            handles.upstream_connected, // Upstream socket is always connected
+                            handles.upstream_connected,
                             cache.dest_sock_type,
                             &cache.dest_sa,
                             cache.dest_port_id,
@@ -276,7 +261,7 @@ fn run_client_to_upstream_thread(
                             last_seen_ns,
                             &handles.upstream_sock,
                             &buf[..len],
-                            handles.upstream_connected, // Upstream socket is always connected
+                            handles.upstream_connected,
                             cache.dest_sock_type,
                             &cache.dest_sa,
                             cache.dest_port_id,
@@ -374,8 +359,9 @@ fn run_watchdog_thread(
     let timeout_ns = Duration::from_secs(cfg.timeout_secs)
         .as_nanos()
         .min(u128::from(u64::MAX)) as u64;
+    let period = Duration::from_secs(1);
     loop {
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(period);
         if locked.load(AtomOrdering::Relaxed) {
             let now = Instant::now();
             let now_ns = Stats::dur_ns(t_start, now);
@@ -418,26 +404,19 @@ fn run_watchdog_thread(
     }
 }
 
-fn spawn_periodic_all(
-    sock_mgrs: Vec<Arc<SocketManager>>,
+fn run_reresolve_thread(
+    sock_mgrs: &[Arc<SocketManager>],
     reresolve_secs: u64,
     allow_upstream: bool,
     allow_listen_rebind: bool,
-) -> bool {
-    if reresolve_secs == 0 || (!allow_upstream && !allow_listen_rebind) || sock_mgrs.is_empty() {
-        return false;
-    }
-    thread::spawn(move || {
-        let period = Duration::from_secs(reresolve_secs);
-        loop {
-            thread::sleep(period);
-            for sock_mgr in &sock_mgrs {
-                let _ =
-                    sock_mgr.reresolve(allow_upstream, allow_listen_rebind, "Periodic re-resolve");
-            }
+) {
+    let period = Duration::from_secs(reresolve_secs);
+    loop {
+        thread::sleep(period);
+        for sock_mgr in sock_mgrs {
+            let _ = sock_mgr.reresolve(allow_upstream, allow_listen_rebind, "Periodic re-resolve");
         }
-    });
-    true
+    }
 }
 
 fn print_startup(cfg: &Config, sock_mgr: &SocketManager) {
@@ -609,12 +588,21 @@ fn main() -> io::Result<()> {
     }
 
     // Optional periodic re-resolve across all workers
-    spawn_periodic_all(
-        sock_mgrs.clone(),
-        cfg.reresolve_secs,
-        cfg.reresolve_mode.allow_upstream(),
-        cfg.reresolve_mode.allow_listen(),
-    );
+    let reresolve_secs = cfg.reresolve_secs;
+    let allow_upstream = cfg.reresolve_mode.allow_upstream();
+    let allow_listen_rebind = cfg.reresolve_mode.allow_listen();
+    if reresolve_secs != 0 && (allow_upstream || allow_listen_rebind) {
+        let sock_mgrs_r = sock_mgrs.clone();
+
+        thread::spawn(move || {
+            run_reresolve_thread(
+                &sock_mgrs_r,
+                reresolve_secs,
+                allow_upstream,
+                allow_listen_rebind,
+            );
+        });
+    }
 
     // Stats thread (report peer info from the first worker)
     stats.spawn_stats_printer(
