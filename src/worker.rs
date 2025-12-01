@@ -1,8 +1,8 @@
 use crate::cli::{Config, TimeoutAction};
-use crate::net::{send_payload, udp_disconnect};
+use crate::net::send_payload;
 use crate::sock_mgr::{SocketHandles, SocketManager};
 use crate::stats::Stats;
-use socket2::{SockAddr, Socket, Type};
+use socket2::{SockAddr, Type};
 
 use std::io;
 use std::net::SocketAddr;
@@ -113,35 +113,6 @@ impl CachedClientState {
     }
 }
 
-#[inline]
-fn handle_udp_disconnect(
-    sock_mgr_opt: Option<&SocketManager>,
-    sock_opt: Option<&Socket>,
-    context: &str,
-    exit_code_set: Option<&AtomicU32>,
-) -> bool {
-    let res = if let Some(sock_mgr) = sock_mgr_opt {
-        sock_mgr.set_client_sock_disconnected()
-    } else if let Some(sock) = sock_opt {
-        udp_disconnect(sock)
-    } else {
-        return false;
-    };
-
-    match res {
-        Ok(_) => true,
-        Err(e) => {
-            if let Some(exit) = exit_code_set {
-                log_error!("{context}: udp disconnect failed: {}", e);
-                exit.store((1 << 31) | 1, AtomOrdering::Relaxed);
-            } else {
-                log_warn!("{context}: udp disconnect failed: {}", e);
-            }
-            false
-        }
-    }
-}
-
 pub fn run_reresolve_thread(
     sock_mgrs: &[Arc<SocketManager>],
     reresolve_secs: u64,
@@ -185,16 +156,17 @@ pub fn run_watchdog_thread(
                         );
                         for sock_mgr in sock_mgrs {
                             if sock_mgr.get_client_connected() {
-                                if !handle_udp_disconnect(
-                                    Some(&sock_mgr),
-                                    None,
-                                    "watchdog",
-                                    Some(exit_code_set),
-                                ) {
-                                    return;
-                                }
                                 let prev = sock_mgr.get_version();
-                                let ver = sock_mgr.set_client_addr_connected(None, false, prev);
+                                let ver = match sock_mgr
+                                    .set_client_sock_disconnected(None, false, prev)
+                                {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        log_error!("watchdog udp disconnect failed: {}", e);
+                                        exit_code_set.store((1 << 31) | 1, AtomOrdering::Relaxed);
+                                        return;
+                                    }
+                                };
                                 log_debug!(
                                     cfg.debug_log_handles,
                                     "watchdog publish disconnect: ver {}->{}",
@@ -272,18 +244,18 @@ pub fn run_upstream_to_client_thread(
                             "[worker {}] send_payload u2c failed (dest-addr-required); disconnecting client socket",
                             worker_id
                         );
-                        handle_udp_disconnect(
-                            None,
-                            Some(&handles.client_sock),
-                            "dest-addr-required",
-                            None,
-                        );
                         handles.client_connected = false;
-                        handles.version = sock_mgr.set_client_addr_connected(
+                        handles.version = match sock_mgr.set_client_sock_disconnected(
                             handles.client_addr,
                             false,
-                            handles.version,
-                        );
+                            prev_ver,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                log_warn!("[worker {}] udp disconnect failed: {}", worker_id, e);
+                                prev_ver
+                            }
+                        };
                         log_debug_w!(
                             cfg.debug_log_handles,
                             worker_id,
@@ -414,9 +386,11 @@ pub fn run_client_to_upstream_thread(
                         // Duplicate connect() may cause EADDRINUSE on the same 5-tuple across SO_REUSEPORT sockets.
                         for mgr in all_sock_mgrs {
                             if !std::ptr::eq(mgr.as_ref(), sock_mgr) {
-                                mgr.set_client_addr_connected(
+                                // Best effort
+                                let _ = mgr.set_client_sock_connected(
                                     addr_opt,
                                     handles.client_connected,
+                                    &src_sa,
                                     0,
                                 );
                             }

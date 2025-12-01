@@ -142,7 +142,7 @@ pub fn send_payload(
     };
 
     // If the source side was ICMP, strip the 8-byte Echo header before forwarding.
-    let (icmp_proto, icmp_success, payload, src_ident, src_seq, src_is_req) = match src_proto {
+    let (src_is_icmp, icmp_success, payload, src_ident, src_seq, src_is_req) = match src_proto {
         SupportedProtocol::ICMP => {
             let res = parse_icmp_echo_header(buf);
             (true, res.0, res.1, res.2, res.3, res.4)
@@ -182,7 +182,7 @@ pub fn send_payload(
     }
 
     // Update ICMP reply sequence when we receive a request
-    if icmp_proto && c2u {
+    if src_is_icmp && c2u {
         REPLY_ICMP_SEQ.store(src_seq, AtomOrdering::Relaxed);
     }
 
@@ -202,7 +202,7 @@ pub fn send_payload(
             if sock_connected {
                 sock.send(payload)
             } else {
-                sock.send_to(payload, &dest_sa)
+                sock.send_to(payload, dest_sa)
             }
         }
     };
@@ -213,7 +213,16 @@ pub fn send_payload(
         stats.send_add(c2u, len as u64, t_recv, t_send);
     } else if sock_connected && is_dest_addr_required(&send_res) {
         dest_addr_okay = false;
-        match sock.send_to(payload, dest_sa) {
+
+        // Try sending one more time
+        let retry_res = match dst_proto {
+            SupportedProtocol::ICMP => {
+                send_icmp_echo(sock, false, sock_type, dest_sa, dest_port_id, !c2u, payload)
+            }
+            _ => sock.send_to(payload, dest_sa),
+        };
+
+        match retry_res {
             Ok(_) => {
                 let t_send = Instant::now();
                 last_seen.store(Stats::dur_ns(t_start, t_send), AtomOrdering::Relaxed);
@@ -406,7 +415,7 @@ fn send_icmp_echo(
     if sock_connected {
         sock.send_vectored(&iov)
     } else {
-        sock.send_to_vectored(&iov, &dest_sa)
+        sock.send_to_vectored(&iov, dest_sa)
     }
 }
 
