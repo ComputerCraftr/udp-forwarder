@@ -27,3 +27,12 @@ macro_rules! log_debug {
         }
     };
 }
+
+#[macro_export]
+macro_rules! log_debug_w {
+    ($enabled:expr, $worker:expr, $($arg:tt)*) => {
+        if $enabled {
+            ::std::eprintln!("[DEBUG][worker {}] {}", $worker, ::std::format_args!($($arg)*));
+        }
+    };
+}

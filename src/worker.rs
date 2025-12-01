@@ -24,6 +24,7 @@ fn as_uninit_mut(buf: &mut [u8]) -> &mut [std::mem::MaybeUninit<u8>] {
 
 struct CachedClientState {
     c2u: bool,
+    worker_id: usize,
     client_sa: Option<SockAddr>,
     dest_sock_type: Type,
     dest_sa: SockAddr,
@@ -33,10 +34,17 @@ struct CachedClientState {
 }
 
 impl CachedClientState {
-    fn new(c2u: bool, handles: &SocketHandles, recv_port_id: u16, log_handles: bool) -> Self {
+    fn new(
+        c2u: bool,
+        worker_id: usize,
+        handles: &SocketHandles,
+        recv_port_id: u16,
+        log_handles: bool,
+    ) -> Self {
         if c2u {
             Self {
                 c2u,
+                worker_id,
                 client_sa: handles.client_addr.map(|addr| SockAddr::from(addr)),
                 dest_sock_type: handles.upstream_sock.r#type().unwrap_or(Type::RAW),
                 dest_sa: SockAddr::from(handles.upstream_addr),
@@ -56,6 +64,7 @@ impl CachedClientState {
                 });
             Self {
                 c2u,
+                worker_id,
                 client_sa: None,
                 dest_sock_type: handles.client_sock.r#type().unwrap_or(Type::RAW),
                 dest_sa,
@@ -88,8 +97,9 @@ impl CachedClientState {
             let prev_ver = handles.version;
             *handles = sock_mgr.refresh_handles();
             self.refresh_from_handles(handles);
-            log_debug!(
+            log_debug_w!(
                 self.log_handles,
+                self.worker_id,
                 "refresh_handles_and_cache: stale={}, new_ver={}, c2u={}, client_addr={:?}, client_connected={}, upstream_addr={}, upstream_connected={}",
                 prev_ver,
                 handles.version,
@@ -214,6 +224,7 @@ pub fn run_upstream_to_client_thread(
     t_start: Instant,
     cfg: &Config,
     sock_mgr: &SocketManager,
+    worker_id: usize,
     locked: &AtomicBool,
     last_seen_ns: &AtomicU64,
     stats: &Stats,
@@ -224,6 +235,7 @@ pub fn run_upstream_to_client_thread(
     let mut handles = sock_mgr.refresh_handles();
     let mut cache = CachedClientState::new(
         C2U,
+        worker_id,
         &handles,
         handles.upstream_addr.port(),
         cfg.debug_log_handles,
@@ -239,6 +251,7 @@ pub fn run_upstream_to_client_thread(
                 if locked.load(AtomOrdering::Relaxed) {
                     if !send_payload(
                         C2U,
+                        worker_id,
                         t_start,
                         t_recv,
                         cfg,
@@ -256,7 +269,8 @@ pub fn run_upstream_to_client_thread(
                     {
                         let prev_ver = handles.version;
                         log_warn!(
-                            "send_payload u2c failed (dest-addr-required); disconnecting client socket"
+                            "[worker {}] send_payload u2c failed (dest-addr-required); disconnecting client socket",
+                            worker_id
                         );
                         handle_udp_disconnect(
                             None,
@@ -270,8 +284,9 @@ pub fn run_upstream_to_client_thread(
                             false,
                             handles.version,
                         );
-                        log_debug!(
+                        log_debug_w!(
                             cfg.debug_log_handles,
+                            worker_id,
                             "u2c publish disconnect: addr={:?} ver {}->{}",
                             handles.client_addr,
                             prev_ver,
@@ -297,6 +312,7 @@ pub fn run_client_to_upstream_thread(
     cfg: &Config,
     sock_mgr: &SocketManager,
     all_sock_mgrs: &[Arc<SocketManager>],
+    worker_id: usize,
     locked: &AtomicBool,
     last_seen_ns: &AtomicU64,
     stats: &Stats,
@@ -305,8 +321,13 @@ pub fn run_client_to_upstream_thread(
     let mut buf = vec![0u8; 65535];
     // Cache upstream socket and destination; refresh only when version changes
     let mut handles = sock_mgr.refresh_handles();
-    let mut cache =
-        CachedClientState::new(C2U, &handles, cfg.listen_port_id, cfg.debug_log_handles);
+    let mut cache = CachedClientState::new(
+        C2U,
+        worker_id,
+        &handles,
+        cfg.listen_port_id,
+        cfg.debug_log_handles,
+    );
     loop {
         // Cheap hot-path check: only refresh when manager version changes
         cache.refresh_handles_and_cache(sock_mgr, &mut handles);
@@ -318,6 +339,7 @@ pub fn run_client_to_upstream_thread(
                     if locked.load(AtomOrdering::Relaxed) {
                         send_payload(
                             C2U,
+                            worker_id,
                             t_start,
                             t_recv,
                             cfg,
@@ -379,8 +401,9 @@ pub fn run_client_to_upstream_thread(
                             handles.client_connected,
                             handles.version,
                         );
-                        log_debug!(
+                        log_debug_w!(
                             cfg.debug_log_handles,
+                            worker_id,
                             "c2u publish lock: addr={:?} connected={} ver={}",
                             addr_opt,
                             handles.client_connected,
@@ -412,6 +435,7 @@ pub fn run_client_to_upstream_thread(
                         // Forward the first packet from the new client
                         send_payload(
                             C2U,
+                            worker_id,
                             t_start,
                             t_recv,
                             cfg,
@@ -430,6 +454,7 @@ pub fn run_client_to_upstream_thread(
                         // Only forward packets from the locked client (recv_from may still deliver before connect succeeds)
                         send_payload(
                             C2U,
+                            worker_id,
                             t_start,
                             t_recv,
                             cfg,

@@ -127,12 +127,14 @@ fn main() -> io::Result<()> {
 
     print_startup(&cfg, &sock_mgrs[0]);
 
-    for sock_mgr in &sock_mgrs {
+    for (idx, sock_mgr) in sock_mgrs.iter().enumerate() {
+        let worker_base = idx * 2;
         // Client -> Upstream
         {
             let cfg_a = Arc::clone(&cfg);
             let sock_mgr_a = Arc::clone(&sock_mgr);
             let sock_mgrs_a = sock_mgrs.clone();
+            let worker_id = worker_base;
             let locked_a = Arc::clone(&locked);
             let last_seen_a = Arc::clone(&last_seen_ns);
             let stats_a = Arc::clone(&stats);
@@ -143,6 +145,7 @@ fn main() -> io::Result<()> {
                     &cfg_a,
                     &sock_mgr_a,
                     &sock_mgrs_a,
+                    worker_id,
                     &locked_a,
                     &last_seen_a,
                     &stats_a,
@@ -154,6 +157,7 @@ fn main() -> io::Result<()> {
         {
             let cfg_b = Arc::clone(&cfg);
             let sock_mgr_b = Arc::clone(&sock_mgr);
+            let worker_id = worker_base + 1;
             let locked_b = Arc::clone(&locked);
             let last_seen_b = Arc::clone(&last_seen_ns);
             let stats_b = Arc::clone(&stats);
@@ -163,6 +167,7 @@ fn main() -> io::Result<()> {
                     t_start,
                     &cfg_b,
                     &sock_mgr_b,
+                    worker_id,
                     &locked_b,
                     &last_seen_b,
                     &stats_b,

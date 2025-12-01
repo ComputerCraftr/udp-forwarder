@@ -119,6 +119,7 @@ fn make_icmp_socket(domain: Domain, proto: Protocol, force_raw: bool) -> io::Res
 
 pub fn send_payload(
     c2u: bool,
+    worker_id: usize,
     t_start: Instant,
     t_recv: Instant,
     cfg: &Config,
@@ -154,8 +155,9 @@ pub fn send_payload(
 
     // Handle forwarding errors
     if !icmp_success {
-        log_debug!(
+        log_debug_w!(
             log_drops,
+            worker_id,
             "Dropping packet: Invalid or truncated ICMP Echo header"
         );
         stats.drop_err(c2u);
@@ -168,8 +170,9 @@ pub fn send_payload(
         // Not an error; just ignore replies from the client side.
         return true;
     } else if cfg.max_payload != 0 && len > cfg.max_payload {
-        log_debug!(
+        log_debug_w!(
             log_drops,
+            worker_id,
             "Dropping packet: {} bytes exceeds max {}",
             len,
             cfg.max_payload
@@ -217,8 +220,9 @@ pub fn send_payload(
                 stats.send_add(c2u, len as u64, t_recv, t_send);
             }
             Err(e) => {
-                log_debug!(
+                log_debug_w!(
                     log_drops,
+                    worker_id,
                     "Send to '{:?}' error: {}",
                     dest_sa.as_socket(),
                     e
@@ -227,8 +231,9 @@ pub fn send_payload(
             }
         }
     } else if let Err(e) = send_res {
-        log_debug!(
+        log_debug_w!(
             log_drops,
+            worker_id,
             "Send to '{:?}' error: {}",
             dest_sa.as_socket(),
             e
