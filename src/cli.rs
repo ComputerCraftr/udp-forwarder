@@ -1,4 +1,5 @@
 use crate::net::resolve_first;
+use crate::params::MAX_WIRE_PAYLOAD;
 
 use std::net::SocketAddr;
 use std::{env, process};
@@ -104,7 +105,7 @@ pub fn parse_args() -> Config {
              \t--on-timeout drop|exit   What to do on timeout (default: drop)\n\
              \t--stats-interval-mins N  JSON stats print interval minutes (default: 60)\n\
              \t--workers N              Number of listener/upstream worker pairs (reuse-port, default: 1)\n\
-             \t--max-payload N          Payload limit (0=unlimited)\n\
+             \t--max-payload N          Payload limit (default: 1500)\n\
              \t--reresolve-secs N       Re-resolve host(s) every N seconds (0=disabled)\n\
              \t--reresolve-mode WHAT    Which sockets to re-resolve: upstream|listen|both|none (default: upstream)\n\
              \t--user NAME              Drop privileges to this user (Unix only)\n\
@@ -191,7 +192,7 @@ pub fn parse_args() -> Config {
     let mut timeout_secs: Option<u64> = None;
     let mut on_timeout: Option<TimeoutAction> = None;
     let mut stats_interval_mins: Option<u32> = None;
-    let mut max_payload: Option<usize> = None; // unlimited if None
+    let mut max_payload: Option<usize> = None; // default 1500
     let mut workers: Option<usize> = None; // default 1
     let mut reresolve_secs: Option<u64> = None; // 0 if None
     let mut reresolve_mode: Option<ReresolveMode> = None; // default upstream
@@ -243,6 +244,14 @@ pub fn parse_args() -> Config {
             "--max-payload" => {
                 let val = get_next_value(&mut args_iter, "--max-payload");
                 let parsed = parse_num::<usize>(&val, "--max-payload");
+                if parsed == 0 || parsed > MAX_WIRE_PAYLOAD {
+                    log_error!(
+                        "--max-payload must be >= 1 and <= {} (requested {})",
+                        MAX_WIRE_PAYLOAD,
+                        parsed
+                    );
+                    print_usage_and_exit(2)
+                }
                 set_once(&mut max_payload, parsed, "--max-payload");
             }
             "--workers" => {
@@ -324,7 +333,7 @@ pub fn parse_args() -> Config {
     let timeout_secs = timeout_secs.unwrap_or(10);
     let on_timeout = on_timeout.unwrap_or(TimeoutAction::Drop);
     let stats_interval_mins = stats_interval_mins.unwrap_or(60);
-    let max_payload = max_payload.unwrap_or(0);
+    let max_payload = max_payload.unwrap_or(1500);
     let workers = workers.unwrap_or(1);
     let reresolve_secs = reresolve_secs.unwrap_or(0);
     let reresolve_mode = reresolve_mode.unwrap_or(ReresolveMode::Upstream);

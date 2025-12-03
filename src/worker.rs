@@ -1,5 +1,6 @@
 use crate::cli::{Config, TimeoutAction};
 use crate::net::send_payload;
+use crate::params::MAX_WIRE_PAYLOAD;
 use crate::sock_mgr::{SocketHandles, SocketManager};
 use crate::stats::Stats;
 use socket2::{SockAddr, Type};
@@ -97,13 +98,13 @@ impl CachedClientState {
             let prev_ver = handles.version;
             *handles = sock_mgr.refresh_handles();
             self.refresh_from_handles(handles);
-            log_debug_w!(
+            log_debug_dir!(
                 self.log_handles,
                 self.worker_id,
-                "refresh_handles_and_cache: stale={}, new_ver={}, c2u={}, client_addr={:?}, client_connected={}, upstream_addr={}, upstream_connected={}",
+                self.c2u,
+                "refresh_handles_and_cache: stale={}, new_ver={}, client_addr={:?}, client_connected={}, upstream_addr={}, upstream_connected={}",
                 prev_ver,
                 handles.version,
-                self.c2u,
                 handles.client_addr,
                 handles.client_connected,
                 handles.upstream_addr,
@@ -202,7 +203,9 @@ pub fn run_upstream_to_client_thread(
     stats: &Stats,
 ) {
     const C2U: bool = false;
-    let mut buf = vec![0u8; 65535];
+    // Allow one over to detect oversize
+    let buf_len = MAX_WIRE_PAYLOAD.min(cfg.max_payload) + 1;
+    let mut buf = vec![0u8; buf_len];
     // Cache upstream socket and destination; refresh only when version changes
     let mut handles = sock_mgr.refresh_handles();
     let mut cache = CachedClientState::new(
@@ -240,9 +243,10 @@ pub fn run_upstream_to_client_thread(
                     ) && handles.client_connected
                     {
                         let prev_ver = handles.version;
-                        log_warn!(
-                            "[worker {}] send_payload u2c failed (dest-addr-required); disconnecting client socket",
-                            worker_id
+                        log_warn_dir!(
+                            worker_id,
+                            C2U,
+                            "send_payload failed (dest-addr-required); disconnecting client socket"
                         );
                         handles.client_connected = false;
                         handles.version = match sock_mgr.set_client_sock_disconnected(
@@ -252,14 +256,15 @@ pub fn run_upstream_to_client_thread(
                         ) {
                             Ok(v) => v,
                             Err(e) => {
-                                log_warn!("[worker {}] udp disconnect failed: {}", worker_id, e);
+                                log_warn_dir!(worker_id, C2U, "udp disconnect failed: {}", e);
                                 prev_ver
                             }
                         };
-                        log_debug_w!(
+                        log_debug_dir!(
                             cfg.debug_log_handles,
                             worker_id,
-                            "u2c publish disconnect: addr={:?} ver {}->{}",
+                            C2U,
+                            "publish disconnect: addr={:?} ver {}->{}",
                             handles.client_addr,
                             prev_ver,
                             handles.version
@@ -290,7 +295,9 @@ pub fn run_client_to_upstream_thread(
     stats: &Stats,
 ) {
     const C2U: bool = true;
-    let mut buf = vec![0u8; 65535];
+    // Allow one over to detect oversize
+    let buf_len = MAX_WIRE_PAYLOAD.min(cfg.max_payload) + 1;
+    let mut buf = vec![0u8; buf_len];
     // Cache upstream socket and destination; refresh only when version changes
     let mut handles = sock_mgr.refresh_handles();
     let mut cache = CachedClientState::new(
@@ -373,10 +380,11 @@ pub fn run_client_to_upstream_thread(
                             handles.client_connected,
                             handles.version,
                         );
-                        log_debug_w!(
+                        log_debug_dir!(
                             cfg.debug_log_handles,
                             worker_id,
-                            "c2u publish lock: addr={:?} connected={} ver={}",
+                            C2U,
+                            "publish lock: addr={:?} connected={} ver={}",
                             addr_opt,
                             handles.client_connected,
                             handles.version

@@ -2,6 +2,7 @@
 mod logging;
 mod cli;
 mod net;
+mod params;
 mod sock_mgr;
 mod stats;
 mod worker;
