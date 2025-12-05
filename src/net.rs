@@ -614,14 +614,14 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
     // Payload
     let n = data.len();
 
-    let mut pairs = if n < 128 {
+    let (pairs, tail) = if n < 128 {
         // Small/latency path: tight 2-byte pairs loop; no arrays, no extra branches.
-        data.chunks_exact(2)
+        data.as_chunks::<2>()
     } else {
         // Throughput path for medium+ payloads: always use the 32-byte unroll to
         // cut loop/branch overhead and keep the code size minimal.
-        let mut chunks32 = data.chunks_exact(32); // 16 words per iter
-        for c in &mut chunks32 {
+        let (chunks32, rem32) = data.as_chunks::<32>(); // 16 words per iter
+        for c in chunks32 {
             sum = sum
                 .wrapping_add(be16_32(c[0], c[1]))
                 .wrapping_add(be16_32(c[2], c[3]))
@@ -641,19 +641,17 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
                 .wrapping_add(be16_32(c[30], c[31]));
         }
         // Remainder after 32B blocks
-        let rem = chunks32.remainder();
-        rem.chunks_exact(2)
+        rem32.as_chunks::<2>()
     };
 
-    for p in &mut pairs {
+    for p in pairs {
         // p has length 2 exactly
         sum = sum.wrapping_add(be16_32(p[0], p[1]));
     }
     // Odd tail: last byte is the high byte of the final 16-bit word
-    let odd_bool = (n & 1) != 0;
-    let odd = odd_bool as u32;
-    let even = !odd_bool as u32;
-    sum = sum.wrapping_add((data[n - 1] as u32) << 8) * odd | sum * even;
+    if let [last] = tail {
+        sum = sum.wrapping_add((*last as u32) << 8);
+    }
 
     // Final fold to 16 bits and one's complement
     sum = (sum & 0xFFFF) + (sum >> 16);
