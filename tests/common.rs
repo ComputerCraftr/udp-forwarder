@@ -270,14 +270,22 @@ pub fn find_app_bin() -> Option<String> {
     let pkg = env::var("CARGO_PKG_NAME").unwrap_or_else(|_| String::from("app"));
     let exe_name = with_ext(&pkg);
 
-    // Try next to the test executable: target/{debug,release}/<exe_name>
+    // Try next to the test executable: prefer release, then debug
     if let Ok(mut exe) = env::current_exe() {
         // .../target/{profile}/deps/<test_exe>
         if exe.pop() && exe.pop() {
             // Now at .../target/{profile}
-            let candidate = exe.join(&exe_name);
-            if candidate.exists() {
-                return Some(candidate.to_string_lossy().to_string());
+            let target_root = exe.parent().map(Path::to_path_buf);
+            // Check release first, then the current profile dir
+            if let Some(root) = target_root {
+                let candidates = [
+                    root.join("release").join(&exe_name),
+                    exe.join(&exe_name),
+                    root.join("debug").join(&exe_name),
+                ];
+                if let Some(found) = first_existing(candidates.into_iter()) {
+                    return Some(found);
+                }
             }
         }
     }
@@ -285,7 +293,7 @@ pub fn find_app_bin() -> Option<String> {
     // Try under CARGO_TARGET_DIR if set.
     if let Ok(target_dir) = env::var("CARGO_TARGET_DIR") {
         let target = PathBuf::from(target_dir);
-        let paths = ["debug", "release"]
+        let paths = ["release", "debug"]
             .into_iter()
             .map(|p| target.join(p).join(&exe_name));
         if let Some(p) = first_existing(paths) {
@@ -296,7 +304,7 @@ pub fn find_app_bin() -> Option<String> {
     // Fallback to standard target/<profile>/<exe_name> under the manifest dir.
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let md = PathBuf::from(manifest_dir);
-        let paths = ["debug", "release"]
+        let paths = ["release", "debug"]
             .into_iter()
             .map(|p| md.join("target").join(p).join(&exe_name));
         if let Some(p) = first_existing(paths) {

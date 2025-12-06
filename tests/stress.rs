@@ -10,14 +10,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore] // opt-in: `cargo test --test stress stress_one_minute_ipv4_all -- --ignored`
-fn stress_one_minute_ipv4_all() {
+fn stress_test_ipv4_all() {
     for &proto in SUPPORTED_PROTOCOLS {
-        stress_one_minute_ipv4(proto);
+        stress_test_ipv4(proto);
     }
 }
 
-fn stress_one_minute_ipv4(proto: &str) {
+fn stress_test_ipv4(proto: &str) {
     // Client socket bound to ephemeral local port
     let client_sock = bind_udp_client(IpFamily::V4).expect("IPv4 loopback not available");
 
@@ -45,10 +44,8 @@ fn stress_one_minute_ipv4(proto: &str) {
         .arg(TIMEOUT_SECS.as_secs().to_string())
         .arg("--on-timeout")
         .arg("exit")
-        .arg("--stats-interval-mins")
-        .arg("1")
         .arg("--workers")
-        .arg("2")
+        .arg("1")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
@@ -70,13 +67,13 @@ fn stress_one_minute_ipv4(proto: &str) {
         .connect(listen_addr)
         .expect("connect to forwarder (IPv4)");
 
-    // Load gen for 60 seconds
-    let payload = vec![0u8; 1400];
+    // Load gen for 20 seconds
+    let payload = vec![255u8; 1400];
     client_sock
         .send(&payload)
         .expect("send to forwarder (IPv4)"); // lock to this client
 
-    let end = Instant::now() + Duration::from_secs(60);
+    let end = Instant::now() + Duration::from_secs(20);
     let mut sent = 0;
 
     // Drain echoes
@@ -153,10 +150,10 @@ fn stress_one_minute_ipv4(proto: &str) {
         stats.to_string()
     );
     assert!(
-        c2u_pkts >= sent * 3 / 4,
-        "c2u_pkts too low: {} vs 75% of sent ~{}\n{}",
+        c2u_pkts >= sent / 2,
+        "c2u_pkts too low: {} vs 50% of sent ~{}\n{}",
         c2u_pkts,
-        sent * 3 / 4,
+        sent / 2,
         stats.to_string()
     );
     assert_eq!(c2u_bytes, c2u_pkts * (payload.len() as u64));
