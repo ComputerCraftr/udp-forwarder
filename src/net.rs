@@ -1,6 +1,8 @@
 use crate::cli::{Config, SupportedProtocol};
 use crate::stats::Stats;
+use bytemuck::{must_cast, must_cast_ref};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use wide::{u16x16, u32x16};
 
 use std::io::{self, IoSlice};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
@@ -599,62 +601,73 @@ pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
 }
 
 /// Compute the Internet Checksum (RFC 1071) for ICMPv4 header+payload.
+///
+/// Uses a scalar fast path for small payloads and a wide SIMD path for
+/// medium/large payloads. All casting is size-preserving and safe.
 #[inline]
 fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
-    // Accumulate 16-bit words over header (with zeroed checksum) then payload.
-    let mut sum: u32 = 0;
+    // Use a wide-enough scalar accumulator for MAX_WIRE_PAYLOAD so we never rely on overflow before folding.
+    let mut sum = 0u32;
 
     // Header: type,code ; checksum(0) ; ident ; seq
-    sum = sum
-        .wrapping_add(be16_32(hdr[0], hdr[1]))
-        .wrapping_add(be16_32(0, 0)) // checksum field treated as zero
-        .wrapping_add(be16_32(hdr[4], hdr[5]))
-        .wrapping_add(be16_32(hdr[6], hdr[7]));
+    // checksum field (hdr[2..4]) is treated as zero.
+    sum += be16_32(hdr[0], hdr[1]) + be16_32(hdr[4], hdr[5]) + be16_32(hdr[6], hdr[7]);
 
-    // Payload
-    let n = data.len();
-
-    let (pairs, tail) = if n < 128 {
-        // Small/latency path: tight 2-byte pairs loop; no arrays, no extra branches.
+    // Only pay the SIMD setup cost when the payload is large enough to amortize it.
+    const SIMD_MIN_LEN: usize = 256;
+    let (pairs, tail) = if data.len() < SIMD_MIN_LEN {
+        // Small/latency path: tight scalar pair loop over the whole payload.
         data.as_chunks::<2>()
     } else {
-        // Throughput path for medium+ payloads: always use the 32-byte unroll to
-        // cut loop/branch overhead and keep the code size minimal.
-        let (chunks32, rem32) = data.as_chunks::<32>(); // 16 words per iter
-        for c in chunks32 {
-            sum = sum
-                .wrapping_add(be16_32(c[0], c[1]))
-                .wrapping_add(be16_32(c[2], c[3]))
-                .wrapping_add(be16_32(c[4], c[5]))
-                .wrapping_add(be16_32(c[6], c[7]))
-                .wrapping_add(be16_32(c[8], c[9]))
-                .wrapping_add(be16_32(c[10], c[11]))
-                .wrapping_add(be16_32(c[12], c[13]))
-                .wrapping_add(be16_32(c[14], c[15]))
-                .wrapping_add(be16_32(c[16], c[17]))
-                .wrapping_add(be16_32(c[18], c[19]))
-                .wrapping_add(be16_32(c[20], c[21]))
-                .wrapping_add(be16_32(c[22], c[23]))
-                .wrapping_add(be16_32(c[24], c[25]))
-                .wrapping_add(be16_32(c[26], c[27]))
-                .wrapping_add(be16_32(c[28], c[29]))
-                .wrapping_add(be16_32(c[30], c[31]));
+        // Throughput path: SIMD over 32-byte chunks (16 words per iteration).
+        let (chunks32, rem32) = data.as_chunks::<32>();
+
+        // Vector accumulator: 16 lanes of u32, one partial sum per lane.
+        let mut vsum = u32x16::splat(0);
+
+        for chunk in chunks32 {
+            // Reinterpret the 32 bytes as 16 native-endian u16 lanes (size-preserving, safe cast).
+            let mut words_be = must_cast::<[u8; 32], u16x16>(*chunk);
+
+            // Byte-swap only on little-endian; big-endian layouts already match the wire.
+            #[cfg(target_endian = "little")]
+            {
+                const MASK: u16x16 = u16x16::splat(0x00FF);
+                let lo = words_be & MASK;
+                let hi = words_be >> 8;
+                words_be = (lo << 8) | hi;
+            }
+
+            // Widen lanes to u32x16 (numeric widening, not a bit cast)
+            let words32 = u32x16::from(words_be);
+
+            // Accumulate in the vector accumulator
+            vsum += words32;
         }
-        // Remainder after 32B blocks
+
+        // Horizontal reduction: collapse the 16 u32 lanes into the scalar sum
+        // without bouncing through the stack more than once.
+        sum += must_cast_ref::<u32x16, [u32; 16]>(&vsum)
+            .iter()
+            .sum::<u32>();
+
+        // Handle the remaining 0–31 bytes scalarly.
         rem32.as_chunks::<2>()
     };
 
     for p in pairs {
-        // p has length 2 exactly
-        sum = sum.wrapping_add(be16_32(p[0], p[1]));
-    }
-    // Odd tail: last byte is the high byte of the final 16-bit word
-    if let [last] = tail {
-        sum = sum.wrapping_add((*last as u32) << 8);
+        sum += be16_32(p[0], p[1]);
     }
 
-    // Final fold to 16 bits and one's complement
+    // Odd tail: last byte is the high byte of the final 16-bit word
+    if let [last] = tail {
+        sum += (*last as u32) << 8;
+    }
+
+    // Final 1’s-complement fold down to 16 bits.
+    // Keep folding carries from the upper 16 bits back into the lower 16.
     sum = (sum & 0xFFFF) + (sum >> 16);
-    sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = (sum & 0xFFFF) + (sum >> 16); // second fold in case the previous add carried
+
     !(sum as u16)
 }
