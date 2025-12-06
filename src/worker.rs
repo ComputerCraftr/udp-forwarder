@@ -23,6 +23,20 @@ fn as_uninit_mut(buf: &mut [u8]) -> &mut [std::mem::MaybeUninit<u8>] {
     }
 }
 
+// Stack-resident, cacheline-aligned buffers
+#[repr(align(64))]
+struct AlignedBuf {
+    data: [u8; MAX_WIRE_PAYLOAD],
+}
+
+impl AlignedBuf {
+    fn new() -> Self {
+        Self {
+            data: [0u8; MAX_WIRE_PAYLOAD],
+        }
+    }
+}
+
 struct CachedClientState {
     c2u: bool,
     worker_id: usize,
@@ -203,9 +217,7 @@ pub fn run_upstream_to_client_thread(
     stats: &Stats,
 ) {
     const C2U: bool = false;
-    // Allow one over to detect oversize
-    let buf_len = MAX_WIRE_PAYLOAD.min(cfg.max_payload) + 1;
-    let mut buf = vec![0u8; buf_len];
+    let mut buf = AlignedBuf::new();
     // Cache upstream socket and destination; refresh only when version changes
     let mut handles = sock_mgr.refresh_handles();
     let mut cache = CachedClientState::new(
@@ -216,7 +228,7 @@ pub fn run_upstream_to_client_thread(
         cfg.debug_log_handles,
     );
     loop {
-        match handles.upstream_sock.recv(as_uninit_mut(&mut buf)) {
+        match handles.upstream_sock.recv(as_uninit_mut(&mut buf.data)) {
             Ok(len) => {
                 let t_recv = Instant::now();
 
@@ -233,7 +245,7 @@ pub fn run_upstream_to_client_thread(
                         stats,
                         last_seen_ns,
                         &handles.client_sock,
-                        &buf[..len],
+                        &buf.data[..len],
                         handles.client_connected,
                         cache.dest_sock_type,
                         &cache.dest_sa,
@@ -295,9 +307,7 @@ pub fn run_client_to_upstream_thread(
     stats: &Stats,
 ) {
     const C2U: bool = true;
-    // Allow one over to detect oversize
-    let buf_len = MAX_WIRE_PAYLOAD.min(cfg.max_payload) + 1;
-    let mut buf = vec![0u8; buf_len];
+    let mut buf = AlignedBuf::new();
     // Cache upstream socket and destination; refresh only when version changes
     let mut handles = sock_mgr.refresh_handles();
     let mut cache = CachedClientState::new(
@@ -312,7 +322,7 @@ pub fn run_client_to_upstream_thread(
         cache.refresh_handles_and_cache(sock_mgr, &mut handles);
         if handles.client_connected {
             // Connected fast path: only packets from the locked client are delivered
-            match handles.client_sock.recv(as_uninit_mut(&mut buf)) {
+            match handles.client_sock.recv(as_uninit_mut(&mut buf.data)) {
                 Ok(len) => {
                     let t_recv = Instant::now();
                     if locked.load(AtomOrdering::Relaxed) {
@@ -325,7 +335,7 @@ pub fn run_client_to_upstream_thread(
                             stats,
                             last_seen_ns,
                             &handles.upstream_sock,
-                            &buf[..len],
+                            &buf.data[..len],
                             handles.upstream_connected,
                             cache.dest_sock_type,
                             &cache.dest_sa,
@@ -345,7 +355,7 @@ pub fn run_client_to_upstream_thread(
                 }
             }
         } else {
-            match handles.client_sock.recv_from(as_uninit_mut(&mut buf)) {
+            match handles.client_sock.recv_from(as_uninit_mut(&mut buf.data)) {
                 Ok((len, src_sa)) => {
                     let t_recv = Instant::now();
                     // First lock: publish client and connect the socket for fast path
@@ -424,7 +434,7 @@ pub fn run_client_to_upstream_thread(
                             stats,
                             last_seen_ns,
                             &handles.upstream_sock,
-                            &buf[..len],
+                            &buf.data[..len],
                             handles.upstream_connected,
                             cache.dest_sock_type,
                             &cache.dest_sa,
@@ -443,7 +453,7 @@ pub fn run_client_to_upstream_thread(
                             stats,
                             last_seen_ns,
                             &handles.upstream_sock,
-                            &buf[..len],
+                            &buf.data[..len],
                             handles.upstream_connected,
                             cache.dest_sock_type,
                             &cache.dest_sa,
