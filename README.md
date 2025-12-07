@@ -13,7 +13,7 @@ Bind once, drop privileges, and forward traffic between a single local client an
 Protocols and behaviors:
 
 - **UDP**: forwards datagrams unchanged and preserves source ports.
-- **ICMP Echo**: parses request/reply headers to avoid loops, supports both v4 and v6.
+- **ICMP Echo**: adds payload to request/reply, supports both v4 and v6.
 - **Connected/unconnected modes**: optional `--debug no-connect` leaves the client socket unconnected for diagnostics.
 - **Drop logging**: `--debug log-drops` prints reasons when packets are rejected.
 - **Payload limits**: enforce MTU-like behavior with `--max-payload`.
@@ -41,4 +41,4 @@ Tests:
 
 - CLI validation: `cargo test --test cli`
 - Integration matrix (UDP/ICMP, IPv4/IPv6, connected/unconnected sockets, timeout watchdog, relock behavior): `cargo test --test integration`
-- Stress runs (60s of sustained load per protocol; opt-in): `cargo test --test stress -- --ignored`
+- Stress runs: `cargo test --test stress`
