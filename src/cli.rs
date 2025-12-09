@@ -11,7 +11,7 @@ pub enum SupportedProtocol {
 }
 
 impl SupportedProtocol {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub const fn from_str(s: &str) -> Option<Self> {
         match s {
             s if s.eq_ignore_ascii_case("udp") => Some(Self::UDP),
             s if s.eq_ignore_ascii_case("icmp") => Some(Self::ICMP),
@@ -19,7 +19,7 @@ impl SupportedProtocol {
         }
     }
 
-    pub fn to_str(&self) -> &'static str {
+    pub const fn to_str(&self) -> &'static str {
         match self {
             Self::UDP => "UDP",
             Self::ICMP => "ICMP",
@@ -59,12 +59,12 @@ impl ReresolveMode {
     }
 
     #[inline]
-    pub fn allow_upstream(self) -> bool {
+    pub const fn allow_upstream(self) -> bool {
         matches!(self, ReresolveMode::Upstream | ReresolveMode::Both)
     }
 
     #[inline]
-    pub fn allow_listen(self) -> bool {
+    pub const fn allow_listen(self) -> bool {
         matches!(self, ReresolveMode::Listen | ReresolveMode::Both)
     }
 }

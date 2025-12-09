@@ -107,7 +107,7 @@ pub struct ChildGuard(Child);
 
 impl ChildGuard {
     #[allow(dead_code)]
-    pub fn new(child: Child) -> Self {
+    pub const fn new(child: Child) -> Self {
         Self(child)
     }
 }
@@ -317,7 +317,9 @@ pub fn find_app_bin() -> Option<String> {
 
 /// Take ownership of the child's stdout, returning the ChildStdout handle.
 #[allow(dead_code)]
-pub fn take_child_stdout(child: &mut std::process::Child) -> Option<std::process::ChildStdout> {
+pub const fn take_child_stdout(
+    child: &mut std::process::Child,
+) -> Option<std::process::ChildStdout> {
     child.stdout.take()
 }
 

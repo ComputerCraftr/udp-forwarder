@@ -18,15 +18,14 @@ const DEST_ADDR_REQUIRED: i32 = 10039; // WSAEDESTADDRREQ
 
 static REQUEST_ICMP_SEQ: AtomicU16 = AtomicU16::new(0);
 static REPLY_ICMP_SEQ: AtomicU16 = AtomicU16::new(0);
-const ZERO_ARRAY: [u8; 1] = [0];
 
 #[inline(always)]
-fn be16_16(b0: u8, b1: u8) -> u16 {
+const fn be16_16(b0: u8, b1: u8) -> u16 {
     ((b0 as u16) << 8) | (b1 as u16)
 }
 
 #[inline(always)]
-fn be16_32(b0: u8, b1: u8) -> u32 {
+const fn be16_32(b0: u8, b1: u8) -> u32 {
     ((b0 as u32) << 8) | (b1 as u32)
 }
 
@@ -147,7 +146,7 @@ pub fn send_payload(
     let (src_is_icmp, icmp_success, payload, src_ident, src_seq, src_is_req) = match src_proto {
         SupportedProtocol::ICMP => {
             let res = parse_icmp_echo_header(buf);
-            (true, res.0, res.1, res.2, res.3, res.4)
+            (true, res.0, &res.1[res.2..res.3], res.4, res.5, res.6)
         }
         _ => (false, true, buf, recv_port_id, 0u16, c2u),
     };
@@ -275,11 +274,12 @@ fn is_dest_addr_required(res: &io::Result<usize>) -> bool {
 ///   * validating ICMP(v6) Echo type/code (v4: 8/0; v6: 128/129 with code 0)
 ///   * stripping the 8-byte ICMP Echo header and returning the remaining payload
 ///
-/// The return tuple is `(ok, payload, ident, seq, is_request)` where:
+/// The return tuple is `(ok, payload, payload_begin, payload_end, ident, seq, is_request)` where:
 ///   * `ok` is `true` iff a complete ICMP(v6) Echo {request, reply} header with
 ///     code 0 was found and validated.
-///   * `payload` is the slice after the Echo header when `ok == true`, or an
-///     empty slice otherwise.
+///   * `payload` is the payload buffer.
+///   * `payload_begin..payload_end` is the slice after the Echo header when `ok == true`,
+///     or an empty slice otherwise.
 ///   * `ident` is the Echo identifier field (undefined when `ok == false`).
 ///   * `seq` is the Echo sequence field (undefined when `ok == false`).
 ///   * `is_request` is `true` for Echo Request and `false` for Echo Reply
@@ -291,8 +291,10 @@ fn is_dest_addr_required(res: &io::Result<usize>) -> bool {
 /// checks. If you change it, re-benchmark under load before simplifying the
 /// control flow.
 #[inline]
-fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, u16, bool) {
+const fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], usize, usize, u16, u16, bool) {
+    const ZERO_ARRAY: [u8; 1] = [0];
     let n = payload.len();
+
     // Probe bytes: read 0,6,9 only when available; otherwise treat as zeroes.
     let has0 = (n >= 1) as usize;
     let buf = if has0 != 0 { payload } else { &ZERO_ARRAY };
@@ -355,7 +357,9 @@ fn parse_icmp_echo_header(payload: &[u8]) -> (bool, &[u8], u16, u16, bool) {
     // On failure, `success == 0` collapses the slice to 0..0 (empty) rather than indexing at `off`.
     (
         success_bool,
-        &buf[(off + 8) * success..n * success],
+        &buf,
+        (off + 8) * success,
+        n * success,
         ident,
         seq,
         is_request,
@@ -463,7 +467,7 @@ pub fn resolve_first(addr: &str) -> io::Result<SocketAddr> {
 }
 
 #[inline]
-pub fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {
+pub const fn family_changed(a: SocketAddr, b: SocketAddr) -> bool {
     match (a, b) {
         (SocketAddr::V4(_), SocketAddr::V4(_)) | (SocketAddr::V6(_), SocketAddr::V6(_)) => false,
         _ => true,

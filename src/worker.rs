@@ -30,7 +30,7 @@ struct AlignedBuf {
 }
 
 impl AlignedBuf {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             data: [0u8; MAX_WIRE_PAYLOAD],
         }
