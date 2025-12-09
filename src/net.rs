@@ -1,6 +1,6 @@
 use crate::cli::{Config, SupportedProtocol};
 use crate::stats::Stats;
-use bytemuck::{must_cast, must_cast_ref};
+use bytemuck::{must_cast_ref, pod_read_unaligned};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use wide::{u16x16, u32x16};
 
@@ -630,8 +630,8 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
         let mut vsum = u32x16::splat(0);
 
         for chunk in chunks32 {
-            // Reinterpret the 32 bytes as 16 native-endian u16 lanes (size-preserving, safe cast).
-            let mut words_be = must_cast::<[u8; 32], u16x16>(*chunk);
+            // Reinterpret the 32 bytes as 16 native-endian u16 lanes with a single unaligned read.
+            let mut words_be = pod_read_unaligned::<u16x16>(chunk);
 
             // Byte-swap only on little-endian; big-endian layouts already match the wire.
             #[cfg(target_endian = "little")]
