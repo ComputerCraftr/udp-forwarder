@@ -675,3 +675,162 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
 
     !(sum as u16)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::MAX_WIRE_PAYLOAD;
+
+    fn reference_checksum(hdr: &[u8; 8], data: &[u8]) -> u16 {
+        // Use u64 to avoid accidental overflow in the oracle.
+        let mut sum = u64::from(be16_32(hdr[0], hdr[1]))
+            + u64::from(be16_32(hdr[4], hdr[5]))
+            + u64::from(be16_32(hdr[6], hdr[7]));
+
+        let mut pairs = data.chunks_exact(2);
+        for pair in &mut pairs {
+            sum += u64::from(be16_32(pair[0], pair[1]));
+        }
+
+        if let Some(&last) = pairs.remainder().first() {
+            sum += u64::from(last) << 8;
+        }
+
+        sum = (sum & 0xFFFF) + (sum >> 16);
+        sum = (sum & 0xFFFF) + (sum >> 16);
+        !(sum as u16)
+    }
+
+    #[test]
+    fn checksum16_matches_reference_small_payloads() {
+        let hdr = [8, 0, 0, 0, 0x12, 0x34, 0x56, 0x78];
+        let even_payload = [1u8, 2, 3, 4];
+        let odd_payload = [0xAAu8, 0xBB, 0xCC];
+
+        assert_eq!(
+            checksum16(&hdr, &even_payload),
+            reference_checksum(&hdr, &even_payload)
+        );
+        assert_eq!(
+            checksum16(&hdr, &odd_payload),
+            reference_checksum(&hdr, &odd_payload)
+        );
+    }
+
+    #[test]
+    fn checksum16_handles_large_payloads() {
+        let hdr = [8, 0, 0, 0, 0x12, 0x34, 0x56, 0x78];
+        let payload: Vec<u8> = (0..400).map(|i| i as u8).collect();
+
+        assert_eq!(
+            checksum16(&hdr, &payload),
+            reference_checksum(&hdr, &payload)
+        );
+    }
+
+    #[test]
+    fn checksum16_handles_max_wire_payload() {
+        let hdr = [8, 0, 0, 0, 0xAB, 0xCD, 0x00, 0x01];
+        let payload: Vec<u8> = (0..MAX_WIRE_PAYLOAD).map(|i| (i % 251) as u8).collect();
+
+        assert_eq!(
+            checksum16(&hdr, &payload),
+            reference_checksum(&hdr, &payload)
+        );
+    }
+
+    #[test]
+    fn checksum16_handles_max_wire_payload_all_ff() {
+        let hdr = [8, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF];
+        let payload = vec![0xFFu8; MAX_WIRE_PAYLOAD];
+
+        assert_eq!(
+            checksum16(&hdr, &payload),
+            reference_checksum(&hdr, &payload)
+        );
+    }
+
+    #[test]
+    fn parse_icmp_echo_header_accepts_ipv4_with_ip_header() {
+        let icmp_payload = [0xDEu8, 0xAD, 0xBE];
+        let mut buf = vec![0u8; 20 + 8 + icmp_payload.len()];
+
+        // IPv4 header (version 4, IHL 5, protocol ICMP)
+        buf[0] = 0x45;
+        buf[8] = 64;
+        buf[9] = 1;
+
+        // ICMP Echo Request header
+        buf[20] = 8;
+        buf[22] = 0;
+        buf[23] = 0;
+        buf[24] = 0x12;
+        buf[25] = 0x34;
+        buf[26] = 0x00;
+        buf[27] = 0x02;
+        buf[28..].copy_from_slice(&icmp_payload);
+
+        let (ok, raw, start, end, ident, seq, is_req) = parse_icmp_echo_header(&buf);
+        assert!(ok);
+        assert_eq!(start, 28);
+        assert_eq!(end, 28 + icmp_payload.len());
+        assert_eq!(ident, 0x1234);
+        assert_eq!(seq, 0x0002);
+        assert!(is_req);
+        assert_eq!(&raw[start..end], &icmp_payload);
+    }
+
+    #[test]
+    fn parse_icmp_echo_header_accepts_ipv6_with_ip_header() {
+        let icmp_payload = [0xCAu8, 0xFE, 0xBA, 0xBE];
+        let mut buf = vec![0u8; 40 + 8 + icmp_payload.len()];
+
+        // IPv6 header (version 6, Next Header ICMPv6)
+        buf[0] = 0x60;
+        buf[6] = 58;
+
+        // ICMPv6 Echo Reply header
+        buf[40] = 129;
+        buf[44] = 0xBE;
+        buf[45] = 0xEF;
+        buf[46] = 0x00;
+        buf[47] = 0x2A;
+        buf[48..].copy_from_slice(&icmp_payload);
+
+        let (ok, raw, start, end, ident, seq, is_req) = parse_icmp_echo_header(&buf);
+        assert!(ok);
+        assert_eq!(start, 48);
+        assert_eq!(end, 48 + icmp_payload.len());
+        assert_eq!(ident, 0xBEEF);
+        assert_eq!(seq, 0x002A);
+        assert!(!is_req);
+        assert_eq!(&raw[start..end], &icmp_payload);
+    }
+
+    #[test]
+    fn parse_icmp_echo_header_accepts_headerless_icmp() {
+        let payload = [0xABu8, 0xCD];
+        let mut buf = Vec::with_capacity(8 + payload.len());
+        buf.extend_from_slice(&[8, 0, 0, 0, 0x01, 0x02, 0x03, 0x04]);
+        buf.extend_from_slice(&payload);
+
+        let (ok, raw, start, end, ident, seq, is_req) = parse_icmp_echo_header(&buf);
+        assert!(ok);
+        assert_eq!(start, 8);
+        assert_eq!(end, 8 + payload.len());
+        assert_eq!(ident, 0x0102);
+        assert_eq!(seq, 0x0304);
+        assert!(is_req);
+        assert_eq!(&raw[start..end], &payload);
+    }
+
+    #[test]
+    fn parse_icmp_echo_header_rejects_truncated_input() {
+        let buf = [0u8; 4];
+        let (ok, _raw, start, end, _ident, _seq, _is_req) = parse_icmp_echo_header(&buf);
+
+        assert!(!ok);
+        assert_eq!(start, 0);
+        assert_eq!(end, 0);
+    }
+}
