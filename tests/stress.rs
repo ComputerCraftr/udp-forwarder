@@ -113,6 +113,11 @@ fn stress_test_ipv4(proto: &str) {
     }
 
     let rcvd = recv_thr.join().unwrap();
+    let rcvd_pct = if sent == 0 {
+        0.0
+    } else {
+        (rcvd as f64) * 100.0 / (sent as f64)
+    };
 
     // After TIMEOUT_SECS of idle it should exit; give it a moment
     let start = Instant::now();
@@ -150,23 +155,41 @@ fn stress_test_ipv4(proto: &str) {
     let u2c_pkts = stats["u2c_pkts"].as_u64().unwrap();
     let c2u_bytes = stats["c2u_bytes"].as_u64().unwrap();
     let u2c_bytes = stats["u2c_bytes"].as_u64().unwrap();
-
-    // Sanity: the forwarder should have seen at least some of what we sent/received.
-    assert!(
-        u2c_pkts >= rcvd,
-        "u2c_pkts too low: {} vs 100% of rcvd ~{}\n{}",
-        u2c_pkts,
-        rcvd,
-        stats.to_string()
-    );
-    assert!(
-        c2u_pkts >= sent * 2 / 5,
-        "c2u_pkts too low: {} vs 40% of sent ~{}\n{}",
-        c2u_pkts,
-        sent * 2 / 5,
-        stats.to_string()
-    );
     assert_eq!(c2u_bytes, c2u_pkts * (payload.len() as u64));
     assert_eq!(u2c_bytes, u2c_pkts * (payload.len() as u64));
-    // assert!(false, "sent:{}\nrcvd:{}\n{}", sent, rcvd, stats.to_string());
+
+    // Sanity: the forwarder should have seen at least some of what we sent/received.
+    // Require at least a reasonable delivery ratio and print detailed counts/percentages on failure.
+    assert!(
+        u2c_pkts >= rcvd,
+        "u2c_pkts too low: u2c_pkts={u2c_pkts} rcvd={rcvd} rcvd_pct={:.2}% stats={}",
+        rcvd_pct,
+        stats.to_string()
+    );
+
+    let min_pct = 40.0;
+    let c2u_pct = if sent == 0 {
+        0.0
+    } else {
+        (c2u_pkts as f64) * 100.0 / (sent as f64)
+    };
+    assert!(
+        c2u_pct >= min_pct,
+        "c2u_pkts too low: sent={sent} c2u_pkts={c2u_pkts} c2u_pct={c2u_pct:.2}% min={min_pct}% stats={}",
+        stats.to_string()
+    );
+
+    assert!(
+        rcvd_pct >= min_pct,
+        "rcvd ratio too low: sent={sent} rcvd={rcvd} rcvd_pct={rcvd_pct:.2}% min={min_pct}% stats={}",
+        stats.to_string()
+    );
+
+    /*
+    assert!(
+        false,
+        "sent={sent} rcvd={rcvd} c2u_pct={c2u_pct:.2}% rcvd_pct={rcvd_pct:.2}% min={min_pct}% stats={}",
+        stats.to_string()
+    );
+    */
 }
