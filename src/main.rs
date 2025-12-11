@@ -48,9 +48,9 @@ fn main() -> io::Result<()> {
     let mut user_requested_cfg = parse_args();
     let worker_count = user_requested_cfg.workers.max(1);
 
-    // FreeBSD UDP disconnect is unreliable; keep sockets unconnected so we can relock.
-    #[cfg(target_os = "freebsd")]
-    {
+    // Disconnect does not work for raw listen sockets and FreeBSD UDP
+    // disconnect is unreliable; keep sockets unconnected so we can relock.
+    if user_requested_cfg.listen_proto == SupportedProtocol::ICMP || cfg!(target_os = "freebsd") {
         user_requested_cfg.debug_no_connect = true;
     }
 
