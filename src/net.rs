@@ -1,6 +1,6 @@
 use crate::cli::{Config, SupportedProtocol};
 use crate::stats::Stats;
-use bytemuck::{must_cast_ref, pod_read_unaligned};
+use bytemuck::{must_cast_ref, pod_align_to};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use wide::{u16x16, u32x16};
 
@@ -610,6 +610,18 @@ pub fn udp_disconnect(_sock: &Socket) -> io::Result<()> {
 /// medium/large payloads. All casting is size-preserving and safe.
 #[inline]
 fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
+    // Shared scalar path: fold 16-bit words into a 32-bit accumulator.
+    let process_scalar = |bytes: &[u8], acc: &mut u32| {
+        let (pairs, tail) = bytes.as_chunks::<2>();
+        for p in pairs {
+            *acc += be16_32(p[0], p[1]);
+        }
+        // Odd tail: last byte is the high byte of the final 16-bit word
+        if let [last] = tail {
+            *acc += (*last as u32) << 8;
+        }
+    };
+
     // Use a wide-enough scalar accumulator for MAX_WIRE_PAYLOAD so we never rely on overflow before folding.
     let mut sum = 0u32;
 
@@ -619,19 +631,19 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
 
     // Only pay the SIMD setup cost when the payload is large enough to amortize it.
     const SIMD_MIN_LEN: usize = 256;
-    let (pairs, tail) = if data.len() < SIMD_MIN_LEN {
+    if data.len() < SIMD_MIN_LEN {
         // Small/latency path: tight scalar pair loop over the whole payload.
-        data.as_chunks::<2>()
+        process_scalar(data, &mut sum);
     } else {
         // Throughput path: SIMD over 32-byte chunks (16 words per iteration).
-        let (chunks32, rem32) = data.as_chunks::<32>();
+        let (head, aligned, tail) = pod_align_to::<u8, u16x16>(data);
 
         // Vector accumulator: 16 lanes of u32, one partial sum per lane.
         let mut vsum = u32x16::splat(0);
 
-        for chunk in chunks32 {
-            // Reinterpret the 32 bytes as 16 native-endian u16 lanes with a single unaligned read.
-            let mut words_be = pod_read_unaligned::<u16x16>(chunk);
+        for chunk in aligned {
+            // `pod_align_to` guarantees alignment; reinterpret directly.
+            let mut words_be = *chunk;
 
             // Byte-swap only on little-endian; big-endian layouts already match the wire.
             #[cfg(target_endian = "little")]
@@ -655,17 +667,9 @@ fn checksum16(hdr: &[u8; 8], data: &[u8]) -> u16 {
             .iter()
             .sum::<u32>();
 
-        // Handle the remaining 0–31 bytes scalarly.
-        rem32.as_chunks::<2>()
-    };
-
-    for p in pairs {
-        sum += be16_32(p[0], p[1]);
-    }
-
-    // Odd tail: last byte is the high byte of the final 16-bit word
-    if let [last] = tail {
-        sum += (*last as u32) << 8;
+        // Handle the remaining bytes (both prefix and suffix) scalarly.
+        process_scalar(head, &mut sum);
+        process_scalar(tail, &mut sum);
     }
 
     // Final 1’s-complement fold down to 16 bits.
